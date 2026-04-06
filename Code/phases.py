@@ -423,8 +423,20 @@ def _parse_local_plan(
             sid += 1
         seen_ids.add(sid)
 
-        json_unc = clamp01(item.get("uncertainty", 0.2))
-        step_unc = clamp01(json_unc * 0.7 + token_unc * 0.3)
+        json_unc    = clamp01(item.get("uncertainty", 0.2))
+        action      = item.get("action", "")
+        
+        # Phase 1 conf와 연결 — can_do에 있는 액션이면 conf 가져오고, 없으면 0.7
+        action_conf = max(
+            (v for k, v in my.conf.items() if _fuzzy_match_soft(action, k)),
+            default=0.7
+        )
+        
+        step_unc = clamp01(
+            json_unc         * 0.5
+            + token_unc      * 0.2
+            + (1 - action_conf) * 0.3
+        )        
 
         hq_raw = item.get("human_query")
         if isinstance(hq_raw, str) and hq_raw.strip().lower() in {"", "null", "none"}:
