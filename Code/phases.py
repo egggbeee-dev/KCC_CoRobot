@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from config import (
     ALPHA, BETA, GAMMA, DELTA,
@@ -284,9 +284,9 @@ EXAMPLE — kitchen agent (LEADER) preparing snacks for delivery:
       "step_id": 3, "time_min": 10,
       "action": "carry snack tray to kitchen doorway for agent_B pickup",
       "preconditions": ["snacks arranged on tray"], "depends_on": [1, 2],
-      "handoff_type": "RELAY", "target_agent": "agent_B",
+      "handoff_type": "PASS", "target_agent": "agent_B",
       "uncertainty": 0.15, "human_query": null,
-      "notes": "payload: snack tray ready at kitchen doorway"
+      "notes": "snack tray ready at kitchen doorway"
     },
     {
       "step_id": 4, "time_min": 15,
@@ -294,23 +294,49 @@ EXAMPLE — kitchen agent (LEADER) preparing snacks for delivery:
       "preconditions": [], "depends_on": [],
       "handoff_type": null, "target_agent": null,
       "uncertainty": 0.1, "human_query": null, "notes": ""
+    },
+    {
+      "step_id": 5, "time_min": 20,
+      "action": "INFORM agent_B: kitchen preparation complete",
+      "preconditions": [], "depends_on": [3],
+      "handoff_type": "INFORM", "target_agent": "agent_B",
+      "uncertainty": 0.1, "human_query": null,
+      "notes": "kitchen ready"
     }
   ]
 }
 </JSON>
 
-RELAY RULES — read carefully:
-- RELAY is declared by the SENDER (the agent preparing/delivering the item).
-- The SENDER sets handoff_type="RELAY" and target_agent=<receiver>.
-- The RECEIVER must add a separate step with depends_on=[sender_step_id].
-- NEVER declare RELAY as the receiver of an item.
-- Example: agent_A prepares snacks → RELAY→agent_B (agent_A is sender)
-           agent_B receives snacks and places on table (agent_B is receiver, depends_on=[3])
+HANDOFF RULES:
+
+PASS — physical item transfer between rooms:
+  ✅ CORRECT: YOU prepare item → carry to boundary → PASS to other agent
+     agent_A: carry snack tray to doorway → PASS→agent_B
+     agent_B: receive tray → place on table (depends_on=[PASS step])
+
+  ❌ WRONG — receiver declaring PASS:
+     agent_B: place snacks on table → PASS→agent_A   (you are RECEIVER, not sender)
+
+  ❌ WRONG — PASS within same room:
+     agent_A: move tray to counter → PASS→agent_A    (no room crossing)
+
+  ❌ WRONG — PASS without preparation step:
+     agent_A: PASS snack tray → agent_B              (where is the preparation?)
+
+  PASS checklist — before declaring PASS, verify ALL of these:
+  1. Am I the one PREPARING and SENDING the item? (not receiving)
+  2. Does the item physically move TO THE OTHER ROOM?
+  3. Have I included the preparation step(s) before this PASS step?
+  If any answer is NO → do NOT use PASS.
+
+INFORM — status/completion notification (no physical item):
+  Use INFORM to notify the other agent that your task is done or ready.
+  Example: "INFORM agent_B: snacks ready for pickup"
 
 CRITICAL:
-- uncertainty: 0.0=certain, 1.0=uncertain. High confidence → LOW uncertainty (0.1–0.3).
+- uncertainty: 0.0=certain, 1.0=uncertain. Confident actions → LOW uncertainty (0.1–0.2).
 - Only write human_query if uncertainty >= 0.5.
-- Steps must be in your own room only.
+- Steps must be in YOUR OWN ROOM ONLY.
 """.strip()
 
 
@@ -329,8 +355,8 @@ OTHER AGENT'S OFFER ({other.room_type}):
 {jdump(offer_to_dict(other))}
 
 MATCHED HANDOFF OPPORTUNITIES:
-- Items YOU can provide to other agent (you are SENDER): {json.dumps(matched_provides, ensure_ascii=False)}
-- Items other agent can provide to YOU (you are RECEIVER): {json.dumps(matched_needs, ensure_ascii=False)}"""
+- Items YOU can PASS to other agent (you are SENDER): {json.dumps(matched_provides, ensure_ascii=False)}
+- Items other agent will PASS to YOU (you are RECEIVER): {json.dumps(matched_needs, ensure_ascii=False)}"""
     else:
         context = f"YOUR ROOM: {my.room_type}\nOTHER AGENT'S ROOM: {other.room_type}"
 
@@ -345,15 +371,15 @@ Global task: "{task}"
 Generate your LOCAL PLAN:
 1. OBSERVABILITY: steps ONLY for your room ({my.room_type}). Use only objects visible in your image.
 2. EXECUTABILITY: every action must be physically possible in your room.
-3. Generate 4–6 steps spread over 0–30 minutes.
+3. Generate 4–6 steps spread over 0–25 minutes.
 4. UNCERTAINTY [0.0–1.0]: set LOW (0.1–0.2) for actions you are confident about.
-5. HANDOFFS:
-   - RELAY: declare ONLY if YOU are sending a physical item to the other agent.
-     Set handoff_type="RELAY", target_agent=<other agent>.
-     Do NOT declare RELAY if you are RECEIVING an item.
-   - INFORM: use to notify the other agent of your completion status.
-6. If you are RECEIVING an item from the other agent (listed in matched needs above),
-   add a receive step with depends_on=[the sender's step_id from their local plan].
+5. HANDOFF — two types only:
+   - PASS: ONLY if YOU are SENDING a physical item to the other agent.
+     Must have preparation step(s) before the PASS step.
+     Do NOT declare PASS if you are RECEIVING an item.
+   - INFORM: notify the other agent of your completion or status.
+6. If you are RECEIVING an item (listed in "Items other agent will PASS to YOU"):
+   Add a receive step with depends_on=[sender's PASS step_id] but NO handoff_type.
 7. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
@@ -471,11 +497,6 @@ def phase3_local_plan(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _detect_contradiction(offer_a: Offer, offer_b: Offer) -> List[str]:
-    """
-    두 에이전트의 can_do / cannot_do 간 실질적 모순만 감지.
-    min_overlap=3 으로 오탐을 줄임.
-    단순히 다른 방 액션을 cannot_do에 올린 경우는 모순이 아님.
-    """
     result = []
     b_cannot = [c.action for c in offer_b.cannot_do]
     a_cannot = [c.action for c in offer_a.cannot_do]
@@ -497,9 +518,6 @@ def _generate_hq_question(
     offer_b: Offer,
     leader_img: str,
 ) -> str:
-    """
-    VLM을 사용해 trigger 상황에 맞는 자연스러운 Human Query 질문을 생성한다.
-    """
     prompt = f"""You are coordinating two home agents working on a task.
 
 Agent A ({offer_a.room_type}) can do: {json.dumps(offer_a.can_do, ensure_ascii=False)}
@@ -514,7 +532,6 @@ Keep it under 2 sentences."""
 
     question, _ = run_vlm(leader_img, prompt)
     question = question.strip().strip('"').strip("'")
-    # 너무 길거나 비어있으면 fallback
     if not question or len(question) > 300:
         return f"[{trigger_type}] {detail} — How should the agents handle this?"
     return question
@@ -534,13 +551,8 @@ def phase4a_human_query(
         return {}, [], []
 
     leader_img = img_a if leader_id == "agent_A" else img_b
-
     triggered: List[str] = []
-    # (trigger_type, detail, u_score) 튜플로 관리
     raw_triggers: List[Tuple[str, str, float]] = []
-
-    # 기존 hq_list (Phase 3에서 uncertainty 높은 스텝)
-    all_hq = sorted(plan_a.hq_list + plan_b.hq_list, key=lambda h: -h.u_step)
 
     # Q1: 높은 플랜 불확실성
     if plan_a.U_plan > UNCERTAINTY_THRESH or plan_b.U_plan > UNCERTAINTY_THRESH:
@@ -551,7 +563,7 @@ def phase4a_human_query(
     # Q2: handoff target 미지정
     unknown = [h for h in plan_a.handoffs + plan_b.handoffs if h.target_agent is None]
     if unknown:
-        detail = f"{len(unknown)} handoff(s) have no assigned target agent: {[h.action for h in unknown]}"
+        detail = f"{len(unknown)} handoff(s) have no assigned target: {[h.action for h in unknown]}"
         triggered.append(f"[Q2] {detail}")
         raw_triggers.append(("Q2_UNKNOWN_TARGET", detail, 0.80))
 
@@ -567,10 +579,10 @@ def phase4a_human_query(
             triggered.append(f"[Q3] Unmatched need: '{need}'")
             raw_triggers.append(("Q3_UNMATCHED_NEED", detail, 0.90))
 
-    # Q4: offer 간 모순 (min_overlap=3으로 강화)
+    # Q4: offer 간 모순
     contradictions = _detect_contradiction(offer_a, offer_b)
     if contradictions:
-        detail = f"{len(contradictions)} contradiction(s) detected: {contradictions[:2]}"
+        detail = f"{len(contradictions)} contradiction(s): {contradictions[:2]}"
         triggered.append(f"[Q4] {detail}")
         raw_triggers.append(("Q4_CONTRADICTION", detail, 0.85))
 
@@ -582,7 +594,6 @@ def phase4a_human_query(
     for c in triggered:
         print(f"    {c}")
 
-    # 우선순위 정렬 후 상위 HQ_TOP_K개 질문 생성
     raw_triggers.sort(key=lambda x: -x[2])
     answers: Dict[str, str] = {}
     asked_questions: List[str] = []
@@ -593,7 +604,6 @@ def phase4a_human_query(
         print("done")
         print(f"  Q{i}: {question}")
         asked_questions.append(question)
-
         try:
             ans = input("  A: ").strip()
         except EOFError:
@@ -609,7 +619,7 @@ def phase4a_human_query(
 # ──────────────────────────────────────────────────────────────────────────────
 
 PHASE4_FEW_SHOT = """
-EXAMPLE JOINT PLAN (kitchen agent_A sends snacks to living room agent_B):
+EXAMPLE JOINT PLAN (agent_A sends snacks to agent_B):
 <JSON>
 {
   "joint_plan": [
@@ -632,7 +642,7 @@ EXAMPLE JOINT PLAN (kitchen agent_A sends snacks to living room agent_B):
       "room": "kitchen", "agent_id": "agent_A",
       "action": "carry snack tray to kitchen doorway for agent_B pickup",
       "preconditions": ["snacks arranged on tray"], "depends_on": [1],
-      "handoff_type": "RELAY", "target_agent": "agent_B",
+      "handoff_type": "PASS", "target_agent": "agent_B",
       "notes": "snack tray ready at doorway"
     },
     {
@@ -641,7 +651,15 @@ EXAMPLE JOINT PLAN (kitchen agent_A sends snacks to living room agent_B):
       "action": "receive snack tray and place on coffee table",
       "preconditions": ["snack tray at doorway"], "depends_on": [3],
       "handoff_type": null, "target_agent": null,
-      "notes": "RELAY receive from agent_A"
+      "notes": "receives from agent_A PASS step 3"
+    },
+    {
+      "step_id": 5, "time_min": 15,
+      "room": "kitchen", "agent_id": "agent_A",
+      "action": "INFORM agent_B: kitchen preparation complete",
+      "preconditions": [], "depends_on": [3],
+      "handoff_type": "INFORM", "target_agent": "agent_B",
+      "notes": "kitchen ready"
     }
   ],
   "validity": {
@@ -650,16 +668,18 @@ EXAMPLE JOINT PLAN (kitchen agent_A sends snacks to living room agent_B):
     "sequential_consistency": "all depends_on resolved",
     "observability": "each agent uses only their own room objects",
     "load_balance": "both agents finish around same time",
-    "handoff_resolution": "RELAY step3→step4 resolved"
+    "handoff_resolution": "PASS step3→step4 resolved"
   }
 }
 </JSON>
 
-CRITICAL:
-- RELAY is declared by the SENDER. The RECEIVER adds a separate step with depends_on=[sender_step_id].
-- room: use the EXACT room name from each agent's offer — NEVER use "|"
-- agent_id: EXACTLY "agent_A" or "agent_B" — NEVER use "|"
-- Every RELAY sender MUST have a matching receiver step.
+CRITICAL HANDOFF RULES:
+- PASS is declared by the SENDER only. Receiver adds a step with depends_on=[PASS step_id], NO handoff_type.
+- INFORM is for status notification only, no physical item transfer.
+- room: EXACT room name from offer — NEVER use "|"
+- agent_id: EXACTLY "agent_A" or "agent_B"
+- Total steps: 6–10 only. Do NOT stack multiple steps at T=30.
+- Both agents must finish within 5 minutes of each other.
 """.strip()
 
 
@@ -705,15 +725,16 @@ HUMAN QUERY ANSWERS:
 Merge conditions:
 1. COMPLETENESS   : cover all objectives from both local plans.
 2. EXECUTABILITY  : each step must be within the assigned agent's can_do.
-3. SEQUENTIAL     : preconditions must be met by prior steps; depends_on must reference valid step_ids.
+3. SEQUENTIAL     : preconditions met by prior steps; depends_on must reference valid step_ids.
 4. OBSERVABILITY  : agent_A uses ONLY {offer_a.room_type}; agent_B uses ONLY {offer_b.room_type}.
-5. LOAD BALANCE   : both agents should finish within 5 minutes of each other.
-6. HANDOFF RESOLVE: every RELAY sender must have a receiver step with depends_on=[sender_step_id].
-7. Use HUMAN QUERY ANSWERS above to resolve any ambiguities.
+5. LOAD BALANCE   : both agents finish within 5 minutes of each other.
+6. PASS RESOLVE   : every PASS sender must have a receiver step with depends_on=[PASS step_id].
+7. Use HUMAN QUERY ANSWERS to resolve ambiguities.
 
 Output rules:
 - step_ids: sequential integers (1, 2, 3, ...), no duplicates
-- time_min: integer in [0, 30]
+- time_min: integer in [0, 30], spread evenly — do NOT stack at T=30
+- Total steps: between 6 and 10
 - room: EXACTLY "{offer_a.room_type}" for agent_A, EXACTLY "{offer_b.room_type}" for agent_B
 - agent_id: EXACTLY "agent_A" or "agent_B"
 - Return ONLY valid JSON inside <JSON> tags.
@@ -780,27 +801,27 @@ def _parse_joint(
             "notes":         str(step.get("notes", "")).strip(),
         })
 
-    # RELAY 수신 스텝 자동 보완
-    relay_steps    = {s["step_id"]: s for s in cleaned if s.get("handoff_type") == "RELAY"}
-    relay_received = {dep for s in cleaned for dep in s.get("depends_on", []) if dep in relay_steps}
+    # PASS 수신 스텝 자동 보완
+    pass_steps    = {s["step_id"]: s for s in cleaned if s.get("handoff_type") == "PASS"}
+    pass_received = {dep for s in cleaned for dep in s.get("depends_on", []) if dep in pass_steps}
 
-    for sid, relay_s in relay_steps.items():
-        if sid not in relay_received and relay_s.get("target_agent") in room_map:
-            target = relay_s["target_agent"]
+    for sid, pass_s in pass_steps.items():
+        if sid not in pass_received and pass_s.get("target_agent") in room_map:
+            target = pass_s["target_agent"]
             auto = {
                 "step_id":       max((s["step_id"] for s in cleaned), default=0) + 1,
-                "time_min":      min(30, relay_s["time_min"] + 1),
+                "time_min":      min(30, pass_s["time_min"] + 1),
                 "room":          room_map[target],
                 "agent_id":      target,
-                "action":        f"receive and place: {relay_s['action']}",
+                "action":        f"receive and place: {pass_s['action']}",
                 "preconditions": [f"step {sid} completed"],
                 "depends_on":    [sid],
                 "handoff_type":  None,
                 "target_agent":  None,
-                "notes":         "auto-generated RELAY receiver",
+                "notes":         "auto-generated PASS receiver",
             }
             cleaned.append(auto)
-            print(f"  [AUTO-RELAY] step {auto['step_id']} added for {target}")
+            print(f"  [AUTO-PASS] step {auto['step_id']} added for {target}")
 
     return sorted(cleaned, key=lambda x: (x["time_min"], x["step_id"])), validity
 
