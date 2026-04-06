@@ -1,1 +1,10 @@
-
+[
+  {
+    "id": "task_001",
+    "description": "Guests are at the door. Plan the fastest preparation sequence."
+  },
+  {
+    "id": "task_002",
+    "description": "A child is coming over. Make the home safe and welcoming."
+  }
+]
