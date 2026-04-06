@@ -4,9 +4,9 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── 태스크 기본값 ──────────────────────────────────────────────────────────────
-TASK         = "Guests are at the door. Both agents must act simultaneously. Plan the fastest possible preparation sequence"
-IMAGE_A_PATH = "kitchen_clean.jpg"
-IMAGE_B_PATH = "livingroom_clean.jpg"
+TASK         = None
+IMAGE_A_PATH = None
+IMAGE_B_PATH = None
 
 # ── VLM 생성 설정 ──────────────────────────────────────────────────────────────
 MAX_NEW_TOKENS = 2048
