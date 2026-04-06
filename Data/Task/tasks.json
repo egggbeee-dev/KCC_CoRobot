@@ -14,5 +14,9 @@
   {
     "id": "task_004",
     "description": "Prepare the kitchen and living room for a house party.\nArrange seating, set up a food/drink station in the kitchen, and tidy the living room for guests."
-  }
+  },
+  {
+  "id": "task_005",
+  "description": "Each agent must stay in their own room throughout the task. Agents cannot move to the other room. Cooperate to prepare and serve snacks for a family movie night."
+}
 ]
