@@ -5,12 +5,11 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from config import VALID_AGENTS
 from models import CannotEntry, Offer, VerifyResult
-from utils import _fuzzy_match, _keywords, safe_int
+from utils import _fuzzy_match, _fuzzy_match_soft, safe_int
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -22,10 +21,11 @@ def _violates_cannot(action: str, cannot: List[CannotEntry]) -> bool:
     cannot_do 위반 검사.
     1) exact match 먼저 체크
     2) fuzzy match는 min_overlap=3 (오탐 방지)
-    3) auto-generated / INFORM 액션은 스킵
+    3) auto-generated / INFORM / receive 액션은 스킵
     """
     action_lower = action.lower().strip()
-    if "auto-generated" in action_lower or action_lower.startswith("inform"):
+    skip_prefixes = ("auto-generated", "inform", "receive and", "receive snack", "receive item")
+    if any(action_lower.startswith(p) for p in skip_prefixes):
         return False
     for c in cannot:
         if c.action.lower().strip() == action_lower:
@@ -33,6 +33,14 @@ def _violates_cannot(action: str, cannot: List[CannotEntry]) -> bool:
         if _fuzzy_match(action, c.action, min_overlap=3):
             return True
     return False
+
+
+def _relay_sender_in_cando(action: str, can_do: List[str]) -> bool:
+    """
+    RELAY sender의 액션이 해당 에이전트의 can_do에 있는지 확인.
+    fuzzy match soft 사용 (0.4 이상 overlap).
+    """
+    return any(_fuzzy_match_soft(action, cd) for cd in can_do)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -71,7 +79,7 @@ def verify(plan: List[Dict], offer_a: Offer, offer_b: Offer) -> VerifyResult:
             warnings.append(f"LOAD_IMBALANCE: finish={finish}")
 
     # ── RELAY 수신 미완성 검사 ────────────────────────────────────────────────
-    relay_senders   = {s["step_id"] for s in plan if s.get("handoff_type") == "RELAY"}
+    relay_senders   = {s["step_id"]: s for s in plan if s.get("handoff_type") == "RELAY"}
     relay_received: set = set()
     for s in plan:
         for dep in s.get("depends_on", []):
@@ -80,6 +88,35 @@ def verify(plan: List[Dict], offer_a: Offer, offer_b: Offer) -> VerifyResult:
     for sid in relay_senders:
         if sid not in relay_received:
             warnings.append(f"UNRESOLVED_RELAY:step_{sid}")
+
+    # ── RELAY 방향 검증 ───────────────────────────────────────────────────────
+    # sender와 target이 같은 에이전트인지 (self-loop)
+    # sender의 액션이 자신의 can_do에 있는지
+    for sid, relay_s in relay_senders.items():
+        sender = relay_s.get("agent_id", "")
+        target = relay_s.get("target_agent", "")
+
+        # self-loop 검사
+        if sender == target:
+            errors.append(f"RELAY_SELF_LOOP:step_{sid} (sender==target=={sender})")
+
+        # sender가 valid agent인지
+        if sender in offers:
+            offer = offers[sender]
+            action = relay_s.get("action", "")
+            if not _relay_sender_in_cando(action, offer.can_do):
+                warnings.append(
+                    f"RELAY_NOT_IN_CANDO:step_{sid}:{sender}:'{action}' "
+                    f"not found in can_do"
+                )
+
+        # receiver가 반대 에이전트인지 확인
+        expected_receiver = "agent_B" if sender == "agent_A" else "agent_A"
+        if target and target != expected_receiver:
+            warnings.append(
+                f"RELAY_WRONG_TARGET:step_{sid} sender={sender} target={target} "
+                f"(expected {expected_receiver})"
+            )
 
     exec_violations = obs_violations = dep_errors = handoff_count = 0
 
@@ -102,15 +139,18 @@ def verify(plan: List[Dict], offer_a: Offer, offer_b: Offer) -> VerifyResult:
 
         offer = offers[agent_id]
 
+        # cannot_do 위반
         if _violates_cannot(action, offer.cannot_do):
             errors.append(f"CANNOT_DO_VIOLATION:step_{idx}:{agent_id}:'{action}'")
             exec_violations += 1
 
+        # depends_on 유효성
         for dep in (deps if isinstance(deps, list) else []):
             if dep not in step_id_set:
                 errors.append(f"MISSING_DEP:step_{idx} dep={dep}")
                 dep_errors += 1
 
+        # 시간 범위
         t = safe_int(s.get("time_min", 0), 0)
         if t < 0 or t > 30:
             errors.append(f"TIME_RANGE:step_{idx}:t={t}")
@@ -146,7 +186,7 @@ def format_final_plan(plan: List[Dict]) -> str:
     for s in plan:
         dep  = f" deps={s['depends_on']}" if s.get("depends_on") else ""
         hoff = f" [{s['handoff_type']}→{s['target_agent']}]" if s.get("handoff_type") else ""
-        note = f" ({s['notes']})"           if s.get("notes")        else ""
+        note = f" ({s['notes']})" if s.get("notes") else ""
         lines.append(
             f"  {s['step_id']:>2}. [T={s['time_min']:>2}m] [{s['room']:<12}] [{s['agent_id']}]  "
             f"{s['action']}{hoff}{dep}{note}"
