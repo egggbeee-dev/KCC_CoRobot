@@ -65,38 +65,42 @@ def local_plan_to_dict(lp: LocalPlan) -> Dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 PHASE1_FEW_SHOT = """
-EXAMPLE — home agent observing a room:
+EXAMPLE — kitchen agent observing a room:
 <JSON>
 {
-  "room_type": "describe the room type you see (e.g. kitchen, bedroom, bathroom, living room)",
-  "observation": "Wooden shelf with decorative items visible. Appliances and counter surfaces present.",
-  "obs_scope": "counter surface, shelf, appliances, sink, cabinets, floor area",
+  "room_type": "kitchen",
+  "observation": "Kitchen with countertops, a stove, fruits on the island, and a bread basket visible.",
+  "obs_scope": "counter surface, island, stove, sink, shelf, microwave, fruits, bread basket",
   "can_do": [
+    "place apple and orange from island onto serving tray",
+    "arrange bread from basket onto plate",
     "wipe counter surface with cloth",
-    "organize items on shelf",
-    "check for sharp objects on visible surfaces",
-    "secure loose items on shelf",
-    "clean visible sink with sponge"
+    "clean visible sink with sponge",
+    "organize items on shelf"
   ],
   "cannot_do": [
     {"action": "check contents of closed cabinets", "reason": "NO_OBJECT"},
-    {"action": "inspect items behind appliances", "reason": "NO_OBJECT"},
+    {"action": "arrange living room seating", "reason": "NO_OBJECT"},
     {"action": "assess floor area outside camera view", "reason": "NO_OBJECT"}
   ],
   "conf": {
+    "place apple and orange from island onto serving tray": 0.9,
+    "arrange bread from basket onto plate": 0.85,
     "wipe counter surface with cloth": 0.95,
-    "organize items on shelf": 0.85,
-    "check for sharp objects on visible surfaces": 0.9,
-    "secure loose items on shelf": 0.85,
-    "clean visible sink with sponge": 0.9
+    "clean visible sink with sponge": 0.9,
+    "organize items on shelf": 0.85
   },
-  "can_provide": ["secured visible surface area", "organized shelf"],
-  "need_from_other": ["confirmation that other room hazards are addressed"]
+  "can_provide": ["prepared fruit snacks on tray", "arranged bread plate"],
+  "need_from_other": ["confirmation that living room table is ready to receive snacks"]
 }
 </JSON>
 
-IMPORTANT — cannot_do should list things you CANNOT do because the object
-is NOT VISIBLE in your current camera view (not simply because it belongs to another room).
+IMPORTANT:
+- Food items visible in the image (fruits, bread, bowls, containers, bottles)
+  CAN be used as snack or drink ingredients. Include preparation actions in can_do.
+- cannot_do should ONLY list things NOT VISIBLE in your current camera view.
+- obs_scope must be a comma-separated string, NOT a list.
+- reason must be exactly one of: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
 """.strip()
 
 
@@ -112,23 +116,28 @@ Analyze YOUR room and produce an Offer.
 STRICT RULES:
 1. Use ONLY objects directly visible in the image.
 2. can_do: max {MAX_CAN_DO} unique items. Format: "<verb> <specific visible object> [detail]"
-3. cannot_do: max {MAX_CANNOT_DO} items. Reason: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
-   Focus on things NOT VISIBLE in your current view.
+   - If you see food items (fruits, bread, snacks, drinks, bowls), include
+     preparation or serving actions using those specific objects.
+3. cannot_do: max {MAX_CANNOT_DO} items. reason MUST be one of: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
+   - Only list things NOT VISIBLE in your current camera view.
+   - Do NOT use "NO_ROOM" or any other reason string.
 4. can_do and cannot_do must NOT share any action.
 5. conf: confidence per action [0.0–1.0]. Keys must exactly match can_do items.
-6. can_provide / need_from_other: concrete items for inter-agent coordination.
-8. Return ONLY valid JSON inside <JSON> tags.
+6. can_provide: concrete items/results you can hand off to the other agent.
+7. need_from_other: concrete items you need the other agent to provide.
+8. obs_scope: write as a comma-separated string (e.g. "counter, sink, shelf, island").
+9. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
   "room_type": "your room type",
-  "observation": "one concise sentence",
-  "obs_scope": "list of observable areas and objects",
+  "observation": "one concise sentence describing what you see",
+  "obs_scope": "comma-separated list of visible areas and objects",
   "can_do": ["verb + specific visible object + detail"],
   "cannot_do": [{{"action": "specific action", "reason": "NO_OBJECT"}}],
-  "conf": {{"action": 0.9}},
-  "can_provide": ["concrete result"],
-  "need_from_other": ["concrete item needed"]
+  "conf": {{"action string": 0.9}},
+  "can_provide": ["concrete result or item for the other agent"],
+  "need_from_other": ["concrete item or confirmation needed from the other agent"]
 }}
 </JSON>"""
 
@@ -162,12 +171,19 @@ def _parse_offer(raw: str, agent_id: str) -> Offer:
         if len(can_do) >= MAX_CAN_DO:
             break
 
+    # obs_scope: list로 왔을 경우 문자열로 변환
+    raw_scope = data.get("obs_scope", "")
+    if isinstance(raw_scope, list):
+        obs_scope = ", ".join(str(x).strip() for x in raw_scope)
+    else:
+        obs_scope = str(raw_scope).strip()
+
     conf_raw = {str(k).strip(): clamp01(v) for k, v in data.get("conf", {}).items()}
     return Offer(
         agent_id        = agent_id,
         room_type       = str(data.get("room_type", "")).strip(),
         observation     = str(data.get("observation", "")).strip(),
-        obs_scope       = str(data.get("obs_scope", "")).strip(),
+        obs_scope       = obs_scope,
         can_do          = can_do,
         cannot_do       = cannot_do,
         conf            = _match_conf(conf_raw, can_do),
@@ -246,38 +262,55 @@ def phase2_leader(
 # ──────────────────────────────────────────────────────────────────────────────
 
 PHASE3_FEW_SHOT = """
-EXAMPLE (home agent, LEADER):
+EXAMPLE — kitchen agent (LEADER) preparing snacks for delivery:
 <JSON>
 {
   "plan_steps": [
     {
       "step_id": 1, "time_min": 0,
-      "action": "organize shelf to remove fragile or hazardous items",
+      "action": "place apple and orange from island onto serving tray",
       "preconditions": [], "depends_on": [],
       "handoff_type": null, "target_agent": null,
       "uncertainty": 0.1, "human_query": null, "notes": ""
     },
     {
       "step_id": 2, "time_min": 5,
-      "action": "check for sharp objects on visible surfaces",
+      "action": "arrange bread from basket onto plate",
       "preconditions": [], "depends_on": [],
       "handoff_type": null, "target_agent": null,
-      "uncertainty": 0.15, "human_query": null, "notes": ""
+      "uncertainty": 0.1, "human_query": null, "notes": ""
     },
     {
-      "step_id": 3, "time_min": 15,
-      "action": "INFORM agent_B: this room secured, safe to proceed",
-      "preconditions": ["sharp objects removed"], "depends_on": [2],
-      "handoff_type": "INFORM", "target_agent": "agent_B",
-      "uncertainty": 0.1, "human_query": null,
-      "notes": "payload: room hazards cleared at T=15min"
+      "step_id": 3, "time_min": 10,
+      "action": "carry snack tray to kitchen doorway for agent_B pickup",
+      "preconditions": ["snacks arranged on tray"], "depends_on": [1, 2],
+      "handoff_type": "RELAY", "target_agent": "agent_B",
+      "uncertainty": 0.15, "human_query": null,
+      "notes": "payload: snack tray ready at kitchen doorway"
+    },
+    {
+      "step_id": 4, "time_min": 15,
+      "action": "wipe counter surface with cloth",
+      "preconditions": [], "depends_on": [],
+      "handoff_type": null, "target_agent": null,
+      "uncertainty": 0.1, "human_query": null, "notes": ""
     }
   ]
 }
 </JSON>
 
-CRITICAL — uncertainty: 0.0=certain, 1.0=uncertain. High confidence → LOW uncertainty (0.1–0.3).
-Only write human_query if uncertainty >= 0.5.
+RELAY RULES — read carefully:
+- RELAY is declared by the SENDER (the agent preparing/delivering the item).
+- The SENDER sets handoff_type="RELAY" and target_agent=<receiver>.
+- The RECEIVER must add a separate step with depends_on=[sender_step_id].
+- NEVER declare RELAY as the receiver of an item.
+- Example: agent_A prepares snacks → RELAY→agent_B (agent_A is sender)
+           agent_B receives snacks and places on table (agent_B is receiver, depends_on=[3])
+
+CRITICAL:
+- uncertainty: 0.0=certain, 1.0=uncertain. High confidence → LOW uncertainty (0.1–0.3).
+- Only write human_query if uncertainty >= 0.5.
+- Steps must be in your own room only.
 """.strip()
 
 
@@ -296,8 +329,8 @@ OTHER AGENT'S OFFER ({other.room_type}):
 {jdump(offer_to_dict(other))}
 
 MATCHED HANDOFF OPPORTUNITIES:
-Items other agent can provide to YOU: {json.dumps(matched_needs, ensure_ascii=False)}
-Items YOU can provide to other agent: {json.dumps(matched_provides, ensure_ascii=False)}"""
+- Items YOU can provide to other agent (you are SENDER): {json.dumps(matched_provides, ensure_ascii=False)}
+- Items other agent can provide to YOU (you are RECEIVER): {json.dumps(matched_needs, ensure_ascii=False)}"""
     else:
         context = f"YOUR ROOM: {my.room_type}\nOTHER AGENT'S ROOM: {other.room_type}"
 
@@ -310,16 +343,18 @@ Global task: "{task}"
 {PHASE3_FEW_SHOT}
 
 Generate your LOCAL PLAN:
-1. OBSERVABILITY: steps ONLY for your room ({my.room_type}).
-2. EXECUTABILITY: every action physically possible in your room.
+1. OBSERVABILITY: steps ONLY for your room ({my.room_type}). Use only objects visible in your image.
+2. EXECUTABILITY: every action must be physically possible in your room.
 3. Generate 4–6 steps spread over 0–30 minutes.
-4. UNCERTAINTY [0.0–1.0]: set LOW for confident actions.
-5. HANDOFFS — use ONLY when truly needed:
-   - RELAY: use ONLY when a physical item must cross room boundaries
-     (e.g. agent_A prepares food → agent_B picks it up in their room)
-     DO NOT use RELAY for actions you perform entirely within your own room.
-   - INFORM: use to notify the other agent of completed status or key info.
-6. Return ONLY valid JSON inside <JSON> tags.
+4. UNCERTAINTY [0.0–1.0]: set LOW (0.1–0.2) for actions you are confident about.
+5. HANDOFFS:
+   - RELAY: declare ONLY if YOU are sending a physical item to the other agent.
+     Set handoff_type="RELAY", target_agent=<other agent>.
+     Do NOT declare RELAY if you are RECEIVING an item.
+   - INFORM: use to notify the other agent of your completion status.
+6. If you are RECEIVING an item from the other agent (listed in matched needs above),
+   add a receive step with depends_on=[the sender's step_id from their local plan].
+7. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
@@ -436,24 +471,61 @@ def phase3_local_plan(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _detect_contradiction(offer_a: Offer, offer_b: Offer) -> List[str]:
+    """
+    두 에이전트의 can_do / cannot_do 간 실질적 모순만 감지.
+    min_overlap=3 으로 오탐을 줄임.
+    단순히 다른 방 액션을 cannot_do에 올린 경우는 모순이 아님.
+    """
     result = []
     b_cannot = [c.action for c in offer_b.cannot_do]
     a_cannot = [c.action for c in offer_a.cannot_do]
     for action in offer_a.can_do:
-        matches = [bc for bc in b_cannot if _fuzzy_match(action, bc, min_overlap=2)]
+        matches = [bc for bc in b_cannot if _fuzzy_match(action, bc, min_overlap=3)]
         if matches:
             result.append(f"A can_do '{action}' conflicts with B cannot_do '{matches[0]}'")
     for action in offer_b.can_do:
-        matches = [ac for ac in a_cannot if _fuzzy_match(action, ac, min_overlap=2)]
+        matches = [ac for ac in a_cannot if _fuzzy_match(action, ac, min_overlap=3)]
         if matches:
             result.append(f"B can_do '{action}' conflicts with A cannot_do '{matches[0]}'")
     return result
 
 
+def _generate_hq_question(
+    trigger_type: str,
+    detail: str,
+    offer_a: Offer,
+    offer_b: Offer,
+    leader_img: str,
+) -> str:
+    """
+    VLM을 사용해 trigger 상황에 맞는 자연스러운 Human Query 질문을 생성한다.
+    """
+    prompt = f"""You are coordinating two home agents working on a task.
+
+Agent A ({offer_a.room_type}) can do: {json.dumps(offer_a.can_do, ensure_ascii=False)}
+Agent B ({offer_b.room_type}) can do: {json.dumps(offer_b.can_do, ensure_ascii=False)}
+
+Issue detected ({trigger_type}): {detail}
+
+Generate ONE clear, specific, actionable question to ask the human operator.
+The question should help resolve the issue above.
+Write ONLY the question, no preamble or explanation.
+Keep it under 2 sentences."""
+
+    question, _ = run_vlm(leader_img, prompt)
+    question = question.strip().strip('"').strip("'")
+    # 너무 길거나 비어있으면 fallback
+    if not question or len(question) > 300:
+        return f"[{trigger_type}] {detail} — How should the agents handle this?"
+    return question
+
+
 def phase4a_human_query(
     plan_a: LocalPlan, plan_b: LocalPlan,
     offer_a: Offer, offer_b: Offer,
-    leader_id: str, use_human_query: bool = True,
+    leader_id: str,
+    img_a: str, img_b: str,
+    use_human_query: bool = True,
 ) -> Tuple[Dict[str, str], List[str], List[str]]:
     _banner("PHASE 4a — DEFERRED HUMAN QUERY")
 
@@ -461,18 +533,29 @@ def phase4a_human_query(
         print("  [ABLATION] Human query disabled. Skipping.")
         return {}, [], []
 
+    leader_img = img_a if leader_id == "agent_A" else img_b
+
     triggered: List[str] = []
+    # (trigger_type, detail, u_score) 튜플로 관리
+    raw_triggers: List[Tuple[str, str, float]] = []
+
+    # 기존 hq_list (Phase 3에서 uncertainty 높은 스텝)
     all_hq = sorted(plan_a.hq_list + plan_b.hq_list, key=lambda h: -h.u_step)
 
+    # Q1: 높은 플랜 불확실성
     if plan_a.U_plan > UNCERTAINTY_THRESH or plan_b.U_plan > UNCERTAINTY_THRESH:
-        triggered.append(f"[Q1] High uncertainty A:{plan_a.U_plan:.3f} B:{plan_b.U_plan:.3f}")
+        detail = f"Plan uncertainty is high (A:{plan_a.U_plan:.3f}, B:{plan_b.U_plan:.3f})"
+        triggered.append(f"[Q1] {detail}")
+        raw_triggers.append(("Q1_HIGH_UNCERTAINTY", detail, 0.85))
 
+    # Q2: handoff target 미지정
     unknown = [h for h in plan_a.handoffs + plan_b.handoffs if h.target_agent is None]
     if unknown:
-        triggered.append(f"[Q2] {len(unknown)} handoff(s) with unknown target")
-        for h in unknown:
-            all_hq.append(HQEntry(h.step_id, f"Who handles '{h.action}'?", 0.8))
+        detail = f"{len(unknown)} handoff(s) have no assigned target agent: {[h.action for h in unknown]}"
+        triggered.append(f"[Q2] {detail}")
+        raw_triggers.append(("Q2_UNKNOWN_TARGET", detail, 0.80))
 
+    # Q3: need_from_other 미충족
     all_provides = offer_a.can_provide + offer_b.can_provide
     seen_needs: set = set()
     for need in offer_a.need_from_other + offer_b.need_from_other:
@@ -480,14 +563,16 @@ def phase4a_human_query(
             continue
         seen_needs.add(need)
         if not any(_fuzzy_match_soft(need, p) for p in all_provides):
+            detail = f"No agent can provide: '{need}'"
             triggered.append(f"[Q3] Unmatched need: '{need}'")
-            all_hq.append(HQEntry(0, f"No agent can provide '{need}'. How to handle?", 0.9))
+            raw_triggers.append(("Q3_UNMATCHED_NEED", detail, 0.90))
 
+    # Q4: offer 간 모순 (min_overlap=3으로 강화)
     contradictions = _detect_contradiction(offer_a, offer_b)
     if contradictions:
-        triggered.append(f"[Q4] {len(contradictions)} contradiction(s)")
-        for c in contradictions[:2]:
-            all_hq.append(HQEntry(0, f"Conflict: {c}. Which agent is correct?", 0.85))
+        detail = f"{len(contradictions)} contradiction(s) detected: {contradictions[:2]}"
+        triggered.append(f"[Q4] {detail}")
+        raw_triggers.append(("Q4_CONTRADICTION", detail, 0.85))
 
     if not triggered:
         print(f"  Leader ({leader_id}): no query needed.")
@@ -497,24 +582,24 @@ def phase4a_human_query(
     for c in triggered:
         print(f"    {c}")
 
-    seen_q: set = set()
-    deduped: List[HQEntry] = []
-    for hq in sorted(all_hq, key=lambda h: -h.u_step):
-        if hq.question_nl not in seen_q:
-            seen_q.add(hq.question_nl)
-            deduped.append(hq)
-
+    # 우선순위 정렬 후 상위 HQ_TOP_K개 질문 생성
+    raw_triggers.sort(key=lambda x: -x[2])
     answers: Dict[str, str] = {}
     asked_questions: List[str] = []
-    for i, hq in enumerate(deduped[:HQ_TOP_K], 1):
-        print(f"\n  Q{i} [u={hq.u_step:.2f}]: {hq.question_nl}")
-        asked_questions.append(hq.question_nl)
+
+    for i, (trigger_type, detail, u_score) in enumerate(raw_triggers[:HQ_TOP_K], 1):
+        print(f"\n  Generating Q{i} [{trigger_type}, u={u_score:.2f}]...", end=" ", flush=True)
+        question = _generate_hq_question(trigger_type, detail, offer_a, offer_b, leader_img)
+        print("done")
+        print(f"  Q{i}: {question}")
+        asked_questions.append(question)
+
         try:
             ans = input("  A: ").strip()
         except EOFError:
             ans = ""
         if ans:
-            answers[hq.question_nl] = ans
+            answers[question] = ans
 
     return answers, triggered, asked_questions
 
@@ -524,37 +609,39 @@ def phase4a_human_query(
 # ──────────────────────────────────────────────────────────────────────────────
 
 PHASE4_FEW_SHOT = """
-EXAMPLE JOINT PLAN:
+EXAMPLE JOINT PLAN (kitchen agent_A sends snacks to living room agent_B):
 <JSON>
 {
   "joint_plan": [
     {
       "step_id": 1, "time_min": 0,
-      "room": "room_A_name", "agent_id": "agent_A",
-      "action": "organize shelf to remove fragile or hazardous items",
+      "room": "kitchen", "agent_id": "agent_A",
+      "action": "place fruits from island onto serving tray",
       "preconditions": [], "depends_on": [],
       "handoff_type": null, "target_agent": null, "notes": "PARALLEL with step 2"
     },
     {
       "step_id": 2, "time_min": 0,
-      "room": "room_B_name", "agent_id": "agent_B",
-      "action": "arrange seating area for safe use",
+      "room": "living room", "agent_id": "agent_B",
+      "action": "arrange cushions on sofa",
       "preconditions": [], "depends_on": [],
       "handoff_type": null, "target_agent": null, "notes": "PARALLEL with step 1"
     },
     {
-      "step_id": 5, "time_min": 15,
-      "room": "room_A_name", "agent_id": "agent_A",
-      "action": "RELAY: place item at room boundary for agent_B pickup",
-      "preconditions": ["room_A secured"], "depends_on": [3],
-      "handoff_type": "RELAY", "target_agent": "agent_B", "notes": ""
+      "step_id": 3, "time_min": 10,
+      "room": "kitchen", "agent_id": "agent_A",
+      "action": "carry snack tray to kitchen doorway for agent_B pickup",
+      "preconditions": ["snacks arranged on tray"], "depends_on": [1],
+      "handoff_type": "RELAY", "target_agent": "agent_B",
+      "notes": "snack tray ready at doorway"
     },
     {
-      "step_id": 6, "time_min": 16,
-      "room": "room_B_name", "agent_id": "agent_B",
-      "action": "receive item and place in designated spot",
-      "preconditions": ["item placed by agent_A at step 5"], "depends_on": [5],
-      "handoff_type": null, "target_agent": null, "notes": "RELAY receive"
+      "step_id": 4, "time_min": 11,
+      "room": "living room", "agent_id": "agent_B",
+      "action": "receive snack tray and place on coffee table",
+      "preconditions": ["snack tray at doorway"], "depends_on": [3],
+      "handoff_type": null, "target_agent": null,
+      "notes": "RELAY receive from agent_A"
     }
   ],
   "validity": {
@@ -563,15 +650,16 @@ EXAMPLE JOINT PLAN:
     "sequential_consistency": "all depends_on resolved",
     "observability": "each agent uses only their own room objects",
     "load_balance": "both agents finish around same time",
-    "handoff_resolution": "RELAY step5->step6 resolved"
+    "handoff_resolution": "RELAY step3→step4 resolved"
   }
 }
 </JSON>
 
 CRITICAL:
-- room: use the EXACT room name from each agent's offer (room_type field) — NEVER use "|"
+- RELAY is declared by the SENDER. The RECEIVER adds a separate step with depends_on=[sender_step_id].
+- room: use the EXACT room name from each agent's offer — NEVER use "|"
 - agent_id: EXACTLY "agent_A" or "agent_B" — NEVER use "|"
-- Every RELAY sender MUST have a receiver step with depends_on=[sender_step_id]
+- Every RELAY sender MUST have a matching receiver step.
 """.strip()
 
 
@@ -614,18 +702,19 @@ HUMAN QUERY ANSWERS:
 
 {PHASE4_FEW_SHOT}
 
-Conditions:
+Merge conditions:
 1. COMPLETENESS   : cover all objectives from both local plans.
-2. EXECUTABILITY  : each step within the assigned agent's can_do.
-3. SEQUENTIAL     : preconditions met by prior steps.
+2. EXECUTABILITY  : each step must be within the assigned agent's can_do.
+3. SEQUENTIAL     : preconditions must be met by prior steps; depends_on must reference valid step_ids.
 4. OBSERVABILITY  : agent_A uses ONLY {offer_a.room_type}; agent_B uses ONLY {offer_b.room_type}.
-5. LOAD BALANCE   : both agents finish within 5 min of each other.
-6. HANDOFF RESOLVE: every RELAY sender must have a receiver step.
+5. LOAD BALANCE   : both agents should finish within 5 minutes of each other.
+6. HANDOFF RESOLVE: every RELAY sender must have a receiver step with depends_on=[sender_step_id].
+7. Use HUMAN QUERY ANSWERS above to resolve any ambiguities.
 
-Rules:
-- step_ids: sequential (1, 2, 3, ...), no duplicates
-- time_min: [0, 30]
-- room: use EXACTLY the room name from each agent's offer — agent_A room is "{offer_a.room_type}", agent_B room is "{offer_b.room_type}"
+Output rules:
+- step_ids: sequential integers (1, 2, 3, ...), no duplicates
+- time_min: integer in [0, 30]
+- room: EXACTLY "{offer_a.room_type}" for agent_A, EXACTLY "{offer_b.room_type}" for agent_B
 - agent_id: EXACTLY "agent_A" or "agent_B"
 - Return ONLY valid JSON inside <JSON> tags.
 
@@ -634,7 +723,7 @@ Rules:
   "joint_plan": [
     {{
       "step_id": 1, "time_min": 0,
-      "room": "kitchen", "agent_id": "agent_A",
+      "room": "{offer_a.room_type}", "agent_id": "agent_A",
       "action": "verb + specific object + detail",
       "preconditions": [], "depends_on": [],
       "handoff_type": null, "target_agent": null, "notes": ""
@@ -703,7 +792,7 @@ def _parse_joint(
                 "time_min":      min(30, relay_s["time_min"] + 1),
                 "room":          room_map[target],
                 "agent_id":      target,
-                "action":        f"receive and complete: {relay_s['action']}",
+                "action":        f"receive and place: {relay_s['action']}",
                 "preconditions": [f"step {sid} completed"],
                 "depends_on":    [sid],
                 "handoff_type":  None,
