@@ -422,21 +422,22 @@ def _parse_local_plan(
         while sid in seen_ids:
             sid += 1
         seen_ids.add(sid)
-        
-        #action      = item.get("action", "")
-        # phases.py _parse_local_plan 안에서 이 부분을 교체
+
         json_unc    = clamp01(item.get("uncertainty", 0.2))
+        action      = item.get("action", "")
+        
+        # Phase 1 conf와 연결 — can_do에 있는 액션이면 conf 가져오고, 없으면 0.7
         action_conf = max(
             (v for k, v in my.conf.items() if _fuzzy_match_soft(action, k)),
             default=0.7
         )
+        
         step_unc = clamp01(
             json_unc         * 0.5
             + token_unc      * 0.2
             + (1 - action_conf) * 0.3
-        )
+        )        
 
-        
         hq_raw = item.get("human_query")
         if isinstance(hq_raw, str) and hq_raw.strip().lower() in {"", "null", "none"}:
             hq_raw = None
@@ -834,7 +835,26 @@ def _parse_joint(
             cleaned.append(auto)
             print(f"  [AUTO-PASS] step {auto['step_id']} added for {target}")
 
-    return sorted(cleaned, key=lambda x: (x["time_min"], x["step_id"])), validity
+    # ── step_id 전체 renumber ─────────────────────────────────────────────────
+    # local plan A/B의 step_id가 겹칠 수 있어서 joint plan 기준으로 재번호
+    sorted_plan = sorted(cleaned, key=lambda x: (x["time_min"], x["step_id"]))
+
+    old_to_new: Dict[int, int] = {}
+    for new_id, s in enumerate(sorted_plan, start=1):
+        old_to_new[s["step_id"]] = new_id
+
+    for s in sorted_plan:
+        s["step_id"]    = old_to_new[s["step_id"]]
+        s["depends_on"] = [old_to_new[d] for d in s["depends_on"] if d in old_to_new]
+        # preconditions에 "step N completed" 형식이 있으면 업데이트
+        s["preconditions"] = [
+            f"step {old_to_new[int(m.group(1))]} completed"
+            if (m := __import__('re').match(r"step (\d+) completed", p)) and int(m.group(1)) in old_to_new
+            else p
+            for p in s["preconditions"]
+        ]
+
+    return sorted_plan, validity
 
 
 def phase4b_joint_plan(
@@ -849,7 +869,16 @@ def phase4b_joint_plan(
     _banner("PHASE 4b — LEADER-DRIVEN JOINT PLANNING")
     prompt     = build_phase4_prompt(plan_a, plan_b, offer_a, offer_b, leader, human_answers, task)
     leader_img = img_a if leader.leader_id == "agent_A" else img_b
-    raw, _     = run_vlm(leader_img, prompt)
+
+    # ── 재시도 로직 (GPT-4o content filter 대응) ──────────────────────────────
+    MAX_RETRY = 3
+    raw = ""
+    for attempt in range(MAX_RETRY):
+        raw, _ = run_vlm(leader_img, prompt)
+        refusal_keywords = ["sorry", "can't assist", "cannot assist", "i'm not able", "unable to"]
+        if not any(kw in raw.lower() for kw in refusal_keywords):
+            break
+        print(f"  [RETRY {attempt+1}/{MAX_RETRY}] model refused, retrying...")
 
     if verbose == "full":
         _log("RAW JOINT PLAN", raw)
@@ -860,3 +889,4 @@ def phase4b_joint_plan(
         _log("PARSED JOINT PLAN", jdump(joint))
 
     return joint, validity
+    
