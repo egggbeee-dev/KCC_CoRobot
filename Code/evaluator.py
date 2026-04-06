@@ -1,12 +1,6 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # evaluator.py
 # LLM-as-Judge: GPT-4o를 사용한 다차원 플랜 평가
-#
-# 사용법:
-#   from evaluator import evaluate, print_evaluation
-#   result = run(...)
-#   eval_result = evaluate(result, api_key="sk-...")
-#   print_evaluation(eval_result)
 # ══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
@@ -38,10 +32,10 @@ Cannot-do declarations are CORRECT behavior, not failures.
 
 Score 1 if:
 - All observable objectives are addressed in the plan
-- Agents correctly declared what they cannot do (Cannot-do)
+- Agents correctly declared what they cannot do
 Score 0 if:
 - Observable objectives were missed despite being in can_do
-- Agents acted on information they couldn't have
+- Agents acted on information they couldn't have observed
 
 Respond ONLY with valid JSON: {"score": 0 or 1, "reason": "one sentence"}
 """,
@@ -66,10 +60,10 @@ You are evaluating a multi-agent home planning system.
 Observability Consistency (OC): Did agents stay within their observation scope?
 
 Each agent can only observe objects in their own room.
-The observation scope of each agent is listed in their offer (obs_scope field) above.
+The observation scope is listed in their offer (obs_scope field).
 
 - Did any agent perform actions involving objects outside their obs_scope?
-- Did any agent assume knowledge they couldn't have from their single camera view?
+- Did any agent assume knowledge they couldn't have from their camera view?
 - Hallucination = acting on information outside the agent's visible scope.
 
 Score: 1.0 = no violations, 0.5 = minor violations, 0.0 = severe hallucination
@@ -79,28 +73,55 @@ Respond ONLY with valid JSON: {"score": float 0-1, "reason": "one sentence"}
     "SC": """
 You are evaluating a multi-agent home planning system.
 
-Sequential Coherence (SC): Does the plan flow logically?
+Sequential Coherence (SC): Does the plan flow logically with proper coordination?
 
-- Are preconditions met before dependent steps execute?
-- Is the ordering sensible? (e.g., clean before arrange)
-- Are there logical contradictions in the sequence?
-- Do parallel steps (same time_min) make sense simultaneously?
+Evaluate ALL of the following:
+1. Are preconditions met before dependent steps execute?
+2. Is the ordering sensible? (e.g., prepare before deliver)
+3. Do parallel steps (same time_min) make sense simultaneously?
+4. Are depends_on references used correctly to chain dependent actions?
+5. When agent_A passes an item to agent_B, does agent_B's receive step
+   correctly depend on agent_A's PASS step? (cross-agent dependency)
 
-Score: 1.0 = perfect flow, 0.5 = minor issues, 0.0 = major contradictions
+IMPORTANT: A plan where agent_B receives items WITHOUT depending on agent_A's
+preparation step is a SEQUENTIAL VIOLATION, even if individual steps look fine.
+
+Score: 1.0 = perfect flow with correct cross-agent dependencies
+       0.5 = minor issues or missing some depends_on
+       0.0 = major contradictions or missing critical dependencies
 Respond ONLY with valid JSON: {"score": float 0-1, "reason": "one sentence"}
 """,
 
     "CQ": """
 You are evaluating a multi-agent home planning system.
 
-Collaboration Quality (CQ): How well do the two agents collaborate?
+Collaboration Quality (CQ): How effectively do the two agents collaborate?
 
-- Are handoffs (RELAY/INFORM) meaningful and necessary?
-- Does information flow appropriately between agents?
-- Is workload distributed reasonably?
-- Would collaboration actually help more than working alone?
+This system uses two handoff types:
+- PASS: physical item transfer from one agent's room to another
+  (e.g., agent_A prepares snacks in kitchen → carries to doorway → agent_B receives in living room)
+- INFORM: status/completion notification without physical transfer
 
-Score: 1.0 = excellent collaboration, 0.5 = some but weak, 0.0 = no real collaboration
+Evaluate:
+1. Are PASS handoffs meaningful? Does a physical item genuinely cross room boundaries?
+2. Is the PASS direction correct? (sender prepares → receiver places)
+3. Does the receiver step correctly depend on the PASS step?
+4. Are INFORM messages useful for coordination?
+5. Would the plan fail or degrade significantly WITHOUT the handoff?
+   (If yes → high CQ. If agents could work independently just as well → low CQ)
+6. Is workload distributed reasonably between agents?
+
+PENALIZE heavily if:
+- PASS is declared by the RECEIVER instead of the SENDER
+- A PASS step has no corresponding receiver step
+- Handoffs exist but don't meaningfully connect the two agents' work
+- One agent does everything while the other does trivial tasks
+
+Score: 1.0 = excellent, meaningful collaboration with correct PASS/INFORM usage
+       0.7 = good collaboration with minor issues
+       0.5 = some collaboration but weak or incorrect handoff direction
+       0.2 = handoffs exist but don't contribute to task completion
+       0.0 = no real collaboration, agents work completely independently
 Respond ONLY with valid JSON: {"score": float 0-1, "reason": "one sentence"}
 """,
 
@@ -121,7 +142,7 @@ Score: 1.0 = all questions necessary and impactful
        0.4 = some unnecessary or answers not reflected
        0.0 = wasteful or critical uncertainties missed
 
-Respond ONLY with valid JSON: {"score": float 0-1, "reason": "brief judgment per question, then overall"}
+Respond ONLY with valid JSON: {"score": float 0-1, "reason": "brief judgment"}
 """,
 }
 
@@ -130,7 +151,7 @@ Respond ONLY with valid JSON: {"score": float 0-1, "reason": "brief judgment per
 # 컨텍스트 빌더
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _format_plan_for_judge(plan: List[Dict]) -> str:
+def _format_plan_for_judge(plan) -> str:
     if not plan:
         return "  (empty)"
     lines = []
@@ -153,21 +174,27 @@ def _build_judge_context(result: Dict) -> str:
     joint_plan = result.get("joint_plan", [])
     hq         = result.get("human_answers", {})
     hq_str     = "\n".join(f"  Q: {q}\n  A: {a}" for q, a in hq.items()) if hq else "  (no queries asked)"
+    flags      = result.get("flags", {})
 
     return f"""=== TASK ===
 {task}
+
+=== ABLATION FLAGS ===
+use_offer={flags.get('use_offer')} | use_handoff={flags.get('use_handoff')} | use_human_query={flags.get('use_human_query')}
 
 === AGENT A — {offer_a.get('room_type', 'unknown room')} ===
 Observation: {offer_a.get('observation', '')}
 Obs scope: {offer_a.get('obs_scope', '')}
 Can-do: {json.dumps(offer_a.get('can_do', []), ensure_ascii=False)}
 Cannot-do: {json.dumps([c['action'] for c in offer_a.get('cannot_do', [])], ensure_ascii=False)}
+Can provide: {json.dumps(offer_a.get('can_provide', []), ensure_ascii=False)}
 
 === AGENT B — {offer_b.get('room_type', 'unknown room')} ===
 Observation: {offer_b.get('observation', '')}
 Obs scope: {offer_b.get('obs_scope', '')}
 Can-do: {json.dumps(offer_b.get('can_do', []), ensure_ascii=False)}
 Cannot-do: {json.dumps([c['action'] for c in offer_b.get('cannot_do', [])], ensure_ascii=False)}
+Can provide: {json.dumps(offer_b.get('can_provide', []), ensure_ascii=False)}
 
 === AGENT A LOCAL PLAN ===
 {_format_plan_for_judge(plan_a.get('steps', []))}
@@ -190,13 +217,12 @@ def _build_hqe_context(result: Dict) -> str:
 
     trigger_str  = "\n".join(f"  {t}" for t in triggers) if triggers else "  (no triggers)"
     asked_str    = "\n".join(f"  - {q}" for q in hq_asked) if hq_asked else "  (no questions asked)"
-    answered_str = "\n".join(f"  Q: {q}\n  A: {a}" for q, a in hq.items()) if hq else "  (no answers given — user skipped)"
+    answered_str = "\n".join(f"  Q: {q}\n  A: {a}" for q, a in hq.items()) if hq else "  (no answers given)"
 
     return (
         f"WHY the system decided to ask (trigger conditions):\n{trigger_str}\n\n"
         f"QUESTIONS PRESENTED TO HUMAN:\n{asked_str}\n\n"
         f"ANSWERS RECEIVED:\n{answered_str}\n\n"
-        f"NOTE: If questions were asked but no answers given, the system still proceeded with joint planning.\n\n"
         f"FINAL JOINT PLAN:\n{_format_plan_for_judge(joint_plan)}"
     )
 
@@ -259,14 +285,6 @@ def _call_gpt_judge(
 def evaluate(result: Dict, api_key: str, verbose: bool = True) -> Dict:
     """
     run()의 결과를 받아 GPT-4o로 다차원 채점을 수행한다.
-
-    Args:
-        result  : main.run()의 반환값
-        api_key : OpenAI API key ("sk-...")
-        verbose : 진행 상황 출력 여부
-
-    Returns:
-        scores, reasons, total, weights, num_asked, num_answered 포함 dict
     """
     client      = OpenAI(api_key=api_key)
     context     = _build_judge_context(result)
@@ -275,7 +293,7 @@ def evaluate(result: Dict, api_key: str, verbose: bool = True) -> Dict:
     scores:  Dict[str, float] = {}
     reasons: Dict[str, str]   = {}
 
-    # DC — 대화 비용 (제시된 쿼리 수 기반, 자동 계산)
+    # DC — 자동 계산
     num_asked    = len(result.get("hq_asked", []))
     num_answered = len(result.get("human_answers", {}))
     scores["DC"]  = max(0.0, round(1.0 - num_asked * 0.3, 3))
@@ -283,7 +301,7 @@ def evaluate(result: Dict, api_key: str, verbose: bool = True) -> Dict:
     if verbose:
         print(f"  DC (Dialogue Cost) → auto: {scores['DC']:.3f} ({reasons['DC']})")
 
-    # 나머지 메트릭 — GPT-4o judge
+    # GPT-4o judge
     for metric, prompt in JUDGE_PROMPTS.items():
         if verbose:
             print(f"  Judging {metric} ({EVAL_METRIC_NAMES[metric]})...", end=" ", flush=True)
