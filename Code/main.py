@@ -176,7 +176,9 @@ def run(
 
     # ── Phase 4a: Human Query ─────────────────────────────────────────────────
     human_answers, hq_triggers, hq_asked = phase4a_human_query(
-        plan_a, plan_b, offer_a, offer_b, leader.leader_id, use_human_query
+        plan_a, plan_b, offer_a, offer_b,
+        leader.leader_id, img_a, img_b,
+        use_human_query,
     )
 
     # ── Phase 4b: Joint Planning ──────────────────────────────────────────────
