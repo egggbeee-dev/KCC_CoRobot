@@ -19,9 +19,9 @@ from utils import _fuzzy_match, _fuzzy_match_soft, safe_int
 def _violates_cannot(action: str, cannot: List[CannotEntry]) -> bool:
     """
     cannot_do 위반 검사.
-    1) exact match 먼저 체크
-    2) fuzzy match는 min_overlap=3 (오탐 방지)
-    3) auto-generated / INFORM / receive 액션은 스킵
+    - exact match 우선
+    - fuzzy match min_overlap=3 (오탐 방지)
+    - auto-generated / INFORM / receive 액션 스킵
     """
     action_lower = action.lower().strip()
     skip_prefixes = ("auto-generated", "inform", "receive and", "receive snack", "receive item")
@@ -35,12 +35,30 @@ def _violates_cannot(action: str, cannot: List[CannotEntry]) -> bool:
     return False
 
 
-def _relay_sender_in_cando(action: str, can_do: List[str]) -> bool:
-    """
-    RELAY sender의 액션이 해당 에이전트의 can_do에 있는지 확인.
-    fuzzy match soft 사용 (0.4 이상 overlap).
-    """
+def _pass_sender_in_cando(action: str, can_do: List[str]) -> bool:
+    """PASS sender의 액션이 자신의 can_do에 있는지 확인."""
     return any(_fuzzy_match_soft(action, cd) for cd in can_do)
+
+
+def _has_preparation_before_pass(plan: List[Dict], pass_step: Dict) -> bool:
+    """
+    PASS 스텝 이전에 준비 스텝이 있는지 확인.
+    depends_on이 있거나, 같은 에이전트의 이전 스텝이 있으면 OK.
+    """
+    sid      = pass_step.get("step_id")
+    agent_id = pass_step.get("agent_id")
+    deps     = pass_step.get("depends_on", [])
+
+    # depends_on이 있으면 준비 스텝 있는 것으로 간주
+    if deps:
+        return True
+
+    # 같은 에이전트의 이전 시간 스텝이 있는지
+    t = pass_step.get("time_min", 0)
+    for s in plan:
+        if s.get("agent_id") == agent_id and s.get("time_min", 0) < t and s.get("step_id") != sid:
+            return True
+    return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -78,45 +96,52 @@ def verify(plan: List[Dict], offer_a: Offer, offer_b: Offer) -> VerifyResult:
         if abs(vals[0] - vals[1]) > 5:
             warnings.append(f"LOAD_IMBALANCE: finish={finish}")
 
-    # ── RELAY 수신 미완성 검사 ────────────────────────────────────────────────
-    relay_senders   = {s["step_id"]: s for s in plan if s.get("handoff_type") == "RELAY"}
-    relay_received: set = set()
-    for s in plan:
-        for dep in s.get("depends_on", []):
-            if dep in relay_senders:
-                relay_received.add(dep)
-    for sid in relay_senders:
-        if sid not in relay_received:
-            warnings.append(f"UNRESOLVED_RELAY:step_{sid}")
+    # ── PASS 완결성 검증 ──────────────────────────────────────────────────────
+    pass_steps    = {s["step_id"]: s for s in plan if s.get("handoff_type") == "PASS"}
+    pass_received = {dep for s in plan for dep in s.get("depends_on", []) if dep in pass_steps}
 
-    # ── RELAY 방향 검증 ───────────────────────────────────────────────────────
-    # sender와 target이 같은 에이전트인지 (self-loop)
-    # sender의 액션이 자신의 can_do에 있는지
-    for sid, relay_s in relay_senders.items():
-        sender = relay_s.get("agent_id", "")
-        target = relay_s.get("target_agent", "")
+    for sid, pass_s in pass_steps.items():
+        sender = pass_s.get("agent_id", "")
+        target = pass_s.get("target_agent", "")
 
-        # self-loop 검사
+        # 1) receiver 스텝 존재 여부
+        if sid not in pass_received:
+            warnings.append(f"UNRESOLVED_PASS:step_{sid} — no receiver step found")
+
+        # 2) self-loop 검사
         if sender == target:
-            errors.append(f"RELAY_SELF_LOOP:step_{sid} (sender==target=={sender})")
+            errors.append(f"PASS_SELF_LOOP:step_{sid} (sender==target=={sender})")
 
-        # sender가 valid agent인지
+        # 3) sender can_do 검증
         if sender in offers:
-            offer = offers[sender]
-            action = relay_s.get("action", "")
-            if not _relay_sender_in_cando(action, offer.can_do):
+            action = pass_s.get("action", "")
+            if not _pass_sender_in_cando(action, offers[sender].can_do):
                 warnings.append(
-                    f"RELAY_NOT_IN_CANDO:step_{sid}:{sender}:'{action}' "
-                    f"not found in can_do"
+                    f"PASS_NOT_IN_CANDO:step_{sid}:{sender}:'{action}' not found in can_do"
                 )
 
-        # receiver가 반대 에이전트인지 확인
-        expected_receiver = "agent_B" if sender == "agent_A" else "agent_A"
-        if target and target != expected_receiver:
-            warnings.append(
-                f"RELAY_WRONG_TARGET:step_{sid} sender={sender} target={target} "
-                f"(expected {expected_receiver})"
+        # 4) 잘못된 target 방향
+        expected = "agent_B" if sender == "agent_A" else "agent_A"
+        if target and target != expected:
+            errors.append(
+                f"PASS_WRONG_TARGET:step_{sid} sender={sender} target={target} "
+                f"(expected {expected})"
             )
+
+        # 5) 준비 스텝 없이 PASS 선언
+        if not _has_preparation_before_pass(plan, pass_s):
+            warnings.append(
+                f"PASS_NO_PREPARATION:step_{sid} — PASS declared without prior preparation step"
+            )
+
+        # 6) receiver 시간 순서 검증 (receiver가 sender보다 빨리 실행되면 안 됨)
+        for s in plan:
+            if sid in s.get("depends_on", []) and s.get("handoff_type") is None:
+                if s.get("time_min", 0) <= pass_s.get("time_min", 0):
+                    warnings.append(
+                        f"PASS_TIME_ORDER:step_{sid}→step_{s['step_id']} "
+                        f"receiver(T={s['time_min']}) <= sender(T={pass_s['time_min']})"
+                    )
 
     exec_violations = obs_violations = dep_errors = handoff_count = 0
 
