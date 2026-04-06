@@ -6,5 +6,13 @@
   {
     "id": "task_002",
     "description": "A child is coming over. Make the home safe and welcoming."
+  },
+  {
+    "id": "task_003",
+    "description": "Prepare the kitchen and living room for a family movie night with snacks.\nIdentify what snacks and drinks to prepare and arrange the living room seating and lighting for viewing."
+  },
+  {
+    "id": "task_004",
+    "description": "Prepare the kitchen and living room for a house party.\nArrange seating, set up a food/drink station in the kitchen, and tidy the living room for guests."
   }
 ]
