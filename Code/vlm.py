@@ -1,7 +1,4 @@
-# ══════════════════════════════════════════════════════════════════════════════
 # vlm.py
-# VLM 모델 로드 및 이미지+프롬프트 추론 래퍼
-# ══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
 
@@ -13,8 +10,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from config import MAX_NEW_TOKENS
 
-# ── 모델 로드 (import 시 1회) ──────────────────────────────────────────────────
-
+#모델 로드
 MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 dtype    = torch.float16 if torch.cuda.is_available() else torch.float32
 
@@ -25,7 +21,7 @@ processor = AutoProcessor.from_pretrained(MODEL_ID)
 print("model loaded:", MODEL_ID)
 
 
-# ── 추론 함수 ─────────────────────────────────────────────────────────────────
+#추론 함수
 
 def run_vlm(
     image_path: str,
