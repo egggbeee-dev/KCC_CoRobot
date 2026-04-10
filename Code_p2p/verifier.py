@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from config import VALID_AGENTS
-from models import CannotEntry, Offer, VerifyResult
-from utils import _fuzzy_match, _fuzzy_match_soft, safe_int
+from p2p_config import VALID_AGENTS
+from p2p_models import CannotEntry, Offer, VerifyResult
+from p2p_utils import _fuzzy_match, _fuzzy_match_soft, safe_int
 
 
 # ──────────────────────────────────────────────────────────────────────────────
