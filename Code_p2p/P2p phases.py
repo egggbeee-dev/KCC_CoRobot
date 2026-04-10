@@ -17,25 +17,25 @@ import re
 from dataclasses import asdict
 from typing import Dict, List, Optional, Set, Tuple
 
-from config import (
+from p2p_config import (
     ALPHA, BETA, GAMMA, DELTA,
     HQ_TOP_K, MAX_CAN_DO, MAX_CANNOT_DO,
     MAX_NEGOTIATION_ROUNDS,
     UNCERTAINTY_THRESH, VALID_AGENTS,
 )
-from models import (
+from p2p_models import (
     CannotEntry, ConflictEntry, ConflictType,
     ConvergenceResult, HQEntry, Handoff, LeaderResult,
     LocalPlan, NegotiationProposal, NegotiationRound,
     Offer, PlanStep,
 )
-from utils import (
+from p2p_utils import (
     _banner, _fuzzy_match, _fuzzy_match_soft, _log,
     _match_conf, _norm_agent, _norm_depends, _norm_handoff, _norm_reason,
     clamp01, compute_plan_uncertainty, compute_token_uncertainty,
     extract_json, jdump, safe_int,
 )
-from vlm import run_vlm
+from p2p_vlm import run_vlm
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -449,7 +449,7 @@ def phase2_local_plan(
 
 def _resource_keywords(action: str) -> Set[str]:
     """액션에서 자원 키워드 추출 (불용어 제거)."""
-    from config import FUZZY_STOPWORDS
+    from p2p_config import FUZZY_STOPWORDS
     words = set(re.findall(r"\w+", action.lower()))
     return words - FUZZY_STOPWORDS
 
