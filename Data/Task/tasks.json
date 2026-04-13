@@ -13,17 +13,13 @@
         "Check available snack ingredients like popcorn and crackers",
         "Take drinks (juice, soda, etc.) out from the refrigerator",
         "Set out cups, bowls, and trays for serving",
-        "Cook popcorn using a microwave or a pot",
-        "Place napkins and wet wipes on the tray"
       ],
       "living_room": [
         "Clear the line of sight to the TV (remove objects from the table)",
         "Adjust sofa and cushion placement for group seating",
-        "Place blankets on the sofa",
         "Dim or turn off the main lights",
         "Turn on indirect or mood lighting",
-        "Place the remote control in an accessible spot near the sofa",
-        "Place the snack tray on the side table next to the sofa"
+        "Place the snack on the side table next to the sofa"
       ]
     }
   },
