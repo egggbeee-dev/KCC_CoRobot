@@ -379,38 +379,31 @@ def _inject_coordination(
         sender_id, receiver_id, step_offset,
     ):
         for provide in sender_offer.can_provide:
-            # receiver가 이 item을 필요로 하는지
-            receiver_needs = any(
-                _fuzzy_match_soft(provide, n) for n in receiver_offer.need_from_other
-            )
-            if not receiver_needs:
-                # need_from_other 매칭 실패해도 can_provide가 있으면 강제로 처리
-                # (fuzzy match 실패를 보완: provide와 receiver.can_do 중 snack/food 관련이면 연결)
-                pass
+            provide_kw = _resource_keywords(provide)
 
-            # sender 플랜에서 이 item과 관련된 prep step 찾기
+            # ── 1. sender prep step 탐색 ─────────────────────────────────────
             prep_steps = [s for s in sender_plan.steps
-                          if _resource_keywords(provide) & _resource_keywords(s.action)]
+                          if provide_kw & _resource_keywords(s.action)
+                          and not ("[COORD]" in s.notes)]
             if not prep_steps:
-                prep_steps = list(sender_plan.steps)
+                # fallback: stem 없이 원문 키워드로 재시도
+                prep_steps = [s for s in sender_plan.steps
+                              if not ("[COORD]" in s.notes)]
             if not prep_steps:
                 continue
-
             last_prep = max(prep_steps, key=lambda s: s.time_min)
 
-            # delivery step 이미 있는지 확인 (중복 방지)
+            # ── 2. 중복 notify step 방지 ─────────────────────────────────────
             already = any(
-                s.agent_id == sender_id
-                and s.time_min > last_prep.time_min
-                and ("notify" in s.action.lower() or "[COORD]" in s.notes)
+                "[COORD]" in s.notes or s.action.lower().startswith("notify")
                 for s in sender_plan.steps
             )
             if already:
                 continue
 
-            # sender에 delivery step 삽입
+            # ── 3. notify step 삽입 ──────────────────────────────────────────
             all_ids = {s.step_id for s in sender_plan.steps} | {s.step_id for s in receiver_plan.steps}
-            new_sid = max(all_ids, default=step_offset) + 1
+            new_sid  = max(all_ids, default=step_offset) + 1
             while new_sid in all_ids:
                 new_sid += 1
 
@@ -428,38 +421,76 @@ def _inject_coordination(
             )
             sender_plan.steps.append(delivery_step)
             sender_plan.steps.sort(key=lambda s: (s.time_min, s.step_id))
-            print(f"  [COORD] {sender_id}: delivery step{new_sid} added (T={delivery_time}m) for '{provide}'")
+            print(f"  [COORD] {sender_id}: notify step{new_sid} added (T={delivery_time}m) for '{provide}'")
 
-            # receiver 플랜에서 연결할 step 찾기 (강화된 매칭)
-            # (a) item 키워드 겹침  (b) need_from_other 매칭  (c) can_do 매칭
-            provide_kw = _resource_keywords(provide)
-            # can_do 중 item과 관련된 액션이 있으면 해당 키워드도 포함
-            related_can_do_kw: Set[str] = set()
+            # ── 4. receiver step 탐색 및 depends_on 연결 (3단계 fallback) ────
+            # 4a. stemmed keyword 겹침
+            extended_kw: Set[str] = set(provide_kw)
             for cd in receiver_offer.can_do:
-                if len(provide_kw & _resource_keywords(cd)) >= 1:
-                    related_can_do_kw |= _resource_keywords(cd)
-            extended_kw = provide_kw | related_can_do_kw
+                cd_kw = _resource_keywords(cd)
+                if provide_kw & cd_kw:
+                    extended_kw |= cd_kw
 
+            linked = False
             for rs in receiver_plan.steps:
-                # [COORD] signal step은 건너뜀
-                if "[COORD]" in rs.notes or rs.action.lower().startswith(("signal", "notify")):
+                if "[COORD]" in rs.notes or rs.action.lower().startswith(("notify", "signal")):
                     continue
-                act_kw     = _resource_keywords(rs.action)
-                kw_overlap = extended_kw & act_kw
-                need_match = any(_fuzzy_match_soft(rs.action, n) for n in receiver_offer.need_from_other)
-                can_do_match = any(_fuzzy_match_soft(rs.action, cd) for cd in receiver_offer.can_do
-                                   if len(provide_kw & _resource_keywords(cd)) >= 1)
-                if not kw_overlap and not need_match and not can_do_match:
-                    continue
-                if new_sid in rs.depends_on:
-                    continue
-                rs.depends_on = sorted(set(rs.depends_on + [new_sid]))
-                if rs.time_min <= delivery_time:
-                    rs.time_min = delivery_time + 1
-                print(f"  [COORD] {receiver_id} step{rs.step_id} \"{rs.action[:40]}\" "
-                      f"→ depends_on=[...,{new_sid}], T={rs.time_min}m")
+                act_kw = _resource_keywords(rs.action)
+                if extended_kw & act_kw:
+                    _link_receiver(rs, new_sid, delivery_time, receiver_id)
+                    linked = True
+
+            # 4b. need_from_other fuzzy match
+            if not linked:
+                for rs in receiver_plan.steps:
+                    if "[COORD]" in rs.notes or rs.action.lower().startswith(("notify", "signal")):
+                        continue
+                    if any(_fuzzy_match_soft(rs.action, n) for n in receiver_offer.need_from_other):
+                        _link_receiver(rs, new_sid, delivery_time, receiver_id)
+                        linked = True
+
+            # 4c. fallback: receiver can_do 중 provide와 관련 있는 액션을 수행하는 step
+            if not linked:
+                # provide 키워드와 관련된 can_do 항목 찾기
+                related_cd = [cd for cd in receiver_offer.can_do
+                              if provide_kw & _resource_keywords(cd)]
+                for rs in receiver_plan.steps:
+                    if "[COORD]" in rs.notes or rs.action.lower().startswith(("notify", "signal")):
+                        continue
+                    if any(_fuzzy_match_soft(rs.action, cd) for cd in related_cd):
+                        _link_receiver(rs, new_sid, delivery_time, receiver_id)
+                        linked = True
+
+            # 4d. 최후 fallback: receiver can_do와 완전히 일치하는 action의 step
+            if not linked:
+                for rs in receiver_plan.steps:
+                    if "[COORD]" in rs.notes or rs.action.lower().startswith(("notify", "signal")):
+                        continue
+                    if any(_fuzzy_match(rs.action, cd, min_overlap=2) for cd in receiver_offer.can_do):
+                        # provide와 관련 없어 보여도 receiver가 수행할 수 있는 가장 관련성 높은 step
+                        # provide 키워드가 can_do 어딘가에 있으면 연결
+                        for cd in receiver_offer.can_do:
+                            if provide_kw & _resource_keywords(cd) and _fuzzy_match(rs.action, cd, min_overlap=2):
+                                _link_receiver(rs, new_sid, delivery_time, receiver_id)
+                                linked = True
+                                break
+                    if linked:
+                        break
+
+            if not linked:
+                print(f"  [COORD] WARNING: no receiver step matched for '{provide}' — check can_do/need_from_other")
 
         return sender_plan, receiver_plan
+
+    def _link_receiver(rs: PlanStep, notify_sid: int, delivery_time: int, receiver_id: str):
+        """receiver step에 depends_on 연결 + time_min 조정."""
+        if notify_sid in rs.depends_on:
+            return
+        rs.depends_on = sorted(set(rs.depends_on + [notify_sid]))
+        if rs.time_min <= delivery_time:
+            rs.time_min = delivery_time + 1
+        print(f"  [COORD] {receiver_id} step{rs.step_id} \"{rs.action[:45]}\"")
+        print(f"          → depends_on=[...,{notify_sid}], T={rs.time_min}m")
 
     plan_a, plan_b = _inject_one_direction(
         plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B", 0)
@@ -516,8 +547,18 @@ def phase2_local_plan(
 # PHASE 3: CONFLICT DETECTION
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _stem(word: str) -> str:
+    """간단한 rule-based stemming: 복수형 s 제거 (snacks→snack, fruits→fruit)."""
+    if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    if len(word) > 5 and word.endswith("ing"):
+        return word[:-3]  # wipping→wip (불필요하면 무시)
+    return word
+
+
 def _resource_keywords(action: str) -> Set[str]:
-    return set(re.findall(r"\w+", action.lower())) - FUZZY_STOPWORDS
+    words = set(re.findall(r"\w+", action.lower())) - FUZZY_STOPWORDS
+    return {_stem(w) for w in words}
 
 
 def _step_uses_item(step: PlanStep, item: str) -> bool:
