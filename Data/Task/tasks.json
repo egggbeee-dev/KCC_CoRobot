@@ -1,22 +1,800 @@
 [
   {
     "id": "task_001",
-    "description": "Guests are at the door. Plan the fastest preparation sequence."
+    "description": "Prepare the kitchen and living room for a family movie night with snacks. Identify what snacks and drinks to prepare and arrange the living room seating and lighting for viewing.",
+    "subtasks": [
+      "Inventory check and ingredient preparation in kitchen",
+      "Cooking and serving set up in kitchen",
+      "Seating and line-of-sight optimization in living room",
+      "Ambiance and accessibility setup in living room"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Check available snack ingredients like popcorn and crackers",
+        "Take drinks (juice, soda, etc.) out from the refrigerator",
+        "Set out cups, bowls, and trays for serving",
+        "Cook popcorn using a microwave or a pot",
+        "Place napkins and wet wipes on the tray"
+      ],
+      "living_room": [
+        "Clear the line of sight to the TV (remove objects from the table)",
+        "Adjust sofa and cushion placement for group seating",
+        "Place blankets on the sofa",
+        "Dim or turn off the main lights",
+        "Turn on indirect or mood lighting",
+        "Place the remote control in an accessible spot near the sofa",
+        "Place the snack tray on the side table next to the sofa"
+      ]
+    }
   },
   {
     "id": "task_002",
-    "description": "A child is coming over. Make the home safe and welcoming."
+    "description": "Prepare the kitchen and living room for a house party. Arrange seating, set up a food/drink station in the kitchen, and tidy the living room for guests.",
+    "subtasks": [
+      "Workspace clearing and station setup in kitchen",
+      "Waste management and cleaning in kitchen",
+      "Guest seating and floor clearing in living room",
+      "Atmosphere and audio-visual check in living room"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Clear workspace on the counter (remove unnecessary items)",
+        "Set up a food/drink station on a designated side of the table",
+        "Arrange cups, plates, forks, and napkins",
+        "Prepare bottled or canned drinks on the counter or in an ice bucket",
+        "Empty the trash bin and prepare extra bags",
+        "Complete dishwashing and organize the sink"
+      ],
+      "living_room": [
+        "Check the number of seats and move extra chairs",
+        "Tidy up miscellaneous items on the table",
+        "Arrange cushions and the sofa",
+        "Clear items from the floor",
+        "Set the lighting to be bright for a party atmosphere",
+        "Check the location of music playback devices (speakers, etc.)"
+      ]
+    }
   },
   {
     "id": "task_003",
-    "description": "Prepare the kitchen and living room for a family movie night with snacks.\nIdentify what snacks and drinks to prepare and arrange the living room seating and lighting for viewing."
+    "description": "A person is not feeling well and staying home. Prepare light food and warm drinks in the kitchen, and set up the bedroom for comfortable rest.",
+    "subtasks": [
+      "Prepare light meals and warm beverages in kitchen",
+      "Locate medical supplies and organize tray in kitchen",
+      "Environmental control (light/noise) in bedroom",
+      "Bedside care and comfort setup in bedroom"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Prepare warm drinks (ginger tea, honey water, citron tea, etc.)",
+        "Boil water using an electric kettle or a pot",
+        "Check ingredients or cook easy-to-digest food (porridge, toast, soup)",
+        "Get mugs, bowls, and spoons ready",
+        "Locate medicines (digestives, cold medicine) in kitchen drawers",
+        "Place food on a tray to prepare for movement to the bedroom"
+      ],
+      "bedroom": [
+        "Tidy bedsheets and pillows for comfort",
+        "Dim the lights or switch to a night light",
+        "Close curtains or blinds to block light",
+        "Place a glass of water on the side table",
+        "Place medicine and a thermometer within reach on the side table",
+        "Connect the phone to a charger and place it nearby",
+        "Take out an extra blanket and place it by the bed"
+      ]
+    }
   },
   {
     "id": "task_004",
-    "description": "Prepare the kitchen and living room for a house party.\nArrange seating, set up a food/drink station in the kitchen, and tidy the living room for guests."
+    "description": "Prepare the house for a full day of working from home. Set up a comfortable workspace in the bedroom and ensure the kitchen is organized for easy meal access throughout the day.",
+    "subtasks": [
+      "Ergonomic workspace and power setup in bedroom",
+      "Noise isolation and office supply prep in bedroom",
+      "Meal and snack organization in kitchen",
+      "Hydration and cleanliness prep in kitchen"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Clear unnecessary items from the desk to secure workspace",
+        "Secure space for a laptop and mouse",
+        "Set the lighting to be bright (fluorescent or desk lamp)",
+        "Adjust chair height and position for ergonomics",
+        "Check outlet locations and connect charging cables",
+        "Place writing tools and notebooks on the desk",
+        "Check if windows and doors should be closed for noise isolation"
+      ],
+      "kitchen": [
+        "Check the refrigerator for breakfast, lunch, and dinner ingredients",
+        "Organize snacks and drinks for easy access",
+        "Prepare coffee or tea (set out tumblers and mugs)",
+        "Fill a water bottle and place it near the desk in advance",
+        "Organize the sink to remove distractions"
+      ]
+    }
   },
   {
-  "id": "task_005",
-  "description": "Each agent must stay in their own room throughout the task. Agents cannot move to the other room. Cooperate to prepare and serve snacks for a family movie night."
-}
+    "id": "task_005",
+    "description": "Prepare a simple meal using available ingredients visible in the kitchen. Set the table or find a suitable eating spot, using the bedroom as a secondary space if needed.",
+    "subtasks": [
+      "Ingredient check and meal decision in kitchen",
+      "Cooking process and serving preparation in kitchen",
+      "Dining space clearing in kitchen/bedroom",
+      "Hydration and post-meal guidance setup"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Check list of usable ingredients in the refrigerator and shelves",
+        "Decide on a simple meal (egg fried rice, ramen, etc.)",
+        "Take out cooking tools like pots and frying pans",
+        "Start and complete cooking",
+        "Set out bowls, spoons, and chopsticks",
+        "Place food on the kitchen counter or table"
+      ],
+      "bedroom": [
+        "Clear space on the kitchen table",
+        "If the kitchen is cramped, check the bedroom desk as an alternative",
+        "Clear items on the bedroom desk to secure eating space",
+        "Place water or drinks alongside the meal",
+        "Provide guidance on whether dishwashing is needed after eating"
+      ]
+    }
+  },
+  {
+    "id": "task_006",
+    "description": "While eating, hands got dirty. Locate the nearest handwashing spot in the kitchen or bedroom and guide through properly washing hands.",
+    "subtasks": [
+      "Location search and accessibility check",
+      "Preparation of water and cleaning agents",
+      "Guided washing and rinsing procedure",
+      "Drying and disposal instructions"
+    ],
+    "ground_truth": {
+      "search": [
+        "Locate the kitchen sink and determine accessibility",
+        "Check for alternatives in the bedroom (hand wash, wet wipes, etc.)",
+        "Guide to the nearest available washing location"
+      ],
+      "procedure": [
+        "Turn on the faucet and check the water temperature",
+        "Locate soap and provide usage instructions",
+        "If soap is unavailable, suggest alternatives (hand wash, wet wipes)",
+        "Guide to lather and wash for approximately 20 seconds",
+        "Rinse and turn off the faucet",
+        "Locate towels or paper towels",
+        "Instruct on hanging the used towel or disposal"
+      ]
+    }
+  },
+  {
+    "id": "task_007",
+    "description": "Water appears to be leaking somewhere. Inspect the kitchen and bedroom to locate the source and take immediate action to stop or contain the leak.",
+    "subtasks": [
+      "Sink and refrigerator inspection in kitchen",
+      "Containment and appliance protection in kitchen",
+      "Window and AC unit inspection in bedroom",
+      "Damage mitigation and reporting"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Check inside the cabinet under the kitchen sink",
+        "Inspect kitchen faucet and hose connections",
+        "Check the bottom of the kitchen refrigerator (ice maker, etc.)",
+        "Turn off the faucet completely if leak is found",
+        "Wipe up standing water with dry towels or rags",
+        "Move kitchen electronics that should not get wet"
+      ],
+      "bedroom": [
+        "Check for rainwater or condensation around bedroom windows",
+        "Check for leaks in the bedroom air conditioner drain hose",
+        "Identify and report the specific leak location",
+        "Wipe up standing water and move bedroom electronics"
+      ]
+    }
+  },
+  {
+    "id": "task_008",
+    "description": "A guest is arriving in 30 minutes. Quickly tidy the kitchen and bedroom to make them presentable, and prepare a drink or snack to offer.",
+    "subtasks": [
+      "Time-based task prioritization",
+      "Rapid cleaning and dish management in kitchen",
+      "Beverage and snack prep for guest in kitchen",
+      "Bed and floor tidying in bedroom"
+    ],
+    "ground_truth": {
+      "priority": [
+        "Extract a list of tasks that can be completed within 30 minutes",
+        "Prioritize the most visible areas (kitchen/bedroom over others)",
+        "Determine the order of cleaning starting from the most cluttered spots"
+      ],
+      "kitchen": [
+        "Wash dishes or place stacked dishes into the cabinet",
+        "Wipe the counter and organize items",
+        "Prepare drinks (water, juice, tea) and take out glasses",
+        "Place simple snacks (crackers, fruit, etc.) on a plate"
+      ],
+      "bedroom": [
+        "Quickly tidy the blankets and pillows",
+        "Gather items from the floor and clear them",
+        "Put personal items (clothes, underwear, etc.) into drawers/closets",
+        "Empty or hide the trash bin"
+      ]
+    }
+  },
+  {
+    "id": "task_009",
+    "description": "Create a comfortable resting environment using the bedroom and living room. Adjust lighting, seating, and ambient conditions in both rooms to promote relaxation.",
+    "subtasks": [
+      "Ambiance and light control in bedroom",
+      "Device and noise management in bedroom",
+      "Seating comfort and soft goods setup in living room",
+      "Atmospheric lighting in living room"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Turn off main lights and switch to indirect or night lights",
+        "Close curtains or blinds to block external light",
+        "Tidy blankets and pillows for a comfortable setup",
+        "Place an extra blanket on the bed",
+        "Identify and turn off noise sources (TV, alarms, etc.)",
+        "Recommend silent or 'Do Not Disturb' mode for phones"
+      ],
+      "living_room": [
+        "Arrange sofa cushions for comfortable reclining",
+        "Place blankets on the sofa",
+        "Dim or turn off the main lights",
+        "Turn on indirect lights or floor lamps",
+        "Turn off the TV or set it to quiet content",
+        "Place cushions and pillows near the sofa armrests"
+      ]
+    }
+  },
+  {
+    "id": "task_010",
+    "description": "N friends are visiting. Based on visible space in the bedroom and living room, determine how best to accommodate them — seating, entertainment setup, and sleeping arrangement if needed.",
+    "subtasks": [
+      "Seating capacity check and tidying in living room",
+      "Visibility and path clearance in living room",
+      "Resource allocation from bedroom (chairs/mats)",
+      "Overnight accommodation planning in bedroom"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Identify current number of seats (sofa, chairs, etc.)",
+        "Tidy miscellaneous items and clear items from the floor",
+        "Ensure visibility of TV/entertainment for everyone",
+        "Secure pathways for drinks, snacks, and movement",
+        "Set lighting to be bright for a social atmosphere"
+      ],
+      "bedroom": [
+        "Check additional seating or floor space",
+        "Move extra chairs from the bedroom to living room if needed",
+        "Place additional floor cushions or mats",
+        "Prepare bed sharing or floor bedding if overnight stay is required",
+        "Provide guidance on securing personal space for each individual"
+      ]
+    }
+  },
+  {
+    "id": "task_011",
+    "description": "Find the most suitable location in the bedroom or living room to use a laptop comfortably. Evaluate desk, seating, lighting, and power outlet proximity.",
+    "subtasks": [
+      "Ergonomic and power check in bedroom",
+      "Glare and space assessment in bedroom",
+      "Informal workspace evaluation in living room",
+      "Lighting and proximity check in living room"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Check presence and height of a desk",
+        "Determine if desk space can be cleared",
+        "Check chair height and back support",
+        "Check outlet locations and cable length near the desk",
+        "Check window light direction (screen reflection)",
+        "If selected, clear items and place the laptop and charger"
+      ],
+      "living_room": [
+        "Check suitability of sofa + table combination",
+        "Check table height relative to sitting position on the sofa",
+        "Check living room lighting brightness and direction",
+        "Check distance to power outlets",
+        "If selected, clear items and place the laptop and charger"
+      ]
+    }
+  },
+  {
+    "id": "task_012",
+    "description": "The phone cannot be found. Search the bedroom and living room to locate it, then place it in a designated, easily memorable spot.",
+    "subtasks": [
+      "Systematic furniture and pocket search in bedroom",
+      "Hidden area and charger check in bedroom",
+      "Sofa and surface search in living room",
+      "Retrieval and charging setup"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Check on top of or inside side table drawers",
+        "Check between the mattress and under the bed",
+        "Check around the charger",
+        "Check clothing pockets and closet shelves",
+        "Check on the desk and inside drawers",
+        "If found, place in designated spot and connect charger if low"
+      ],
+      "living_room": [
+        "Check between sofa cushions",
+        "Check the floor under the sofa",
+        "Check on and under tables",
+        "Check around the TV and on shelves",
+        "If found, place in designated spot and connect charger if low"
+      ]
+    }
+  },
+  {
+    "id": "task_013",
+    "description": "Recommend and set up the best environment for studying using the bedroom and living room. Optimize lighting, minimize distractions, and arrange a suitable work surface.",
+    "subtasks": [
+      "Surface clearing and tool organization in bedroom",
+      "Concentration factors (light/ventilation) in bedroom",
+      "Distraction removal (AV/Speakers) in living room",
+      "Hydration and snack station setup for focus"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Evaluate desk, lighting, and noise levels",
+        "Remove all unnecessary items from the work surface",
+        "Set lighting to be bright (reading light or main light)",
+        "Organize writing tools and textbooks on the desk",
+        "Adjust the chair to a position suitable for posture",
+        "Ventilate the room to improve concentration"
+      ],
+      "living_room": [
+        "Evaluate table, lighting, and distractions like the TV",
+        "Turn off the TV and speakers",
+        "Clear table surface of distractions",
+        "Minimize leaving the seat by placing water and snacks nearby"
+      ]
+    }
+  },
+  {
+    "id": "task_014",
+    "description": "The remote control on the sofa is visibly dirty. Clean it using available materials in the living room or bedroom, and return it to an appropriate location.",
+    "subtasks": [
+      "Contamination assessment in living room",
+      "Material search in living room/bedroom",
+      "Cleaning and moisture control procedure",
+      "Return to designated functional spot"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Identify the type of contamination (dust, stains, food, etc.) on the remote",
+        "Check for dirt in the gaps between buttons",
+        "Check for wet wipes or dry cloths",
+        "Wipe the entire surface of the remote",
+        "Avoid excessive moisture near buttons",
+        "Place it next to the TV or in a remote holder after drying"
+      ],
+      "bedroom": [
+        "Search for cleaning materials like alcohol swabs or cotton swabs for gaps",
+        "Locate dry cloths if not found in living room"
+      ]
+    }
+  },
+  {
+    "id": "task_015",
+    "description": "It is getting dark. Check all light sources in the living room and bedroom and configure them for adequate evening use.",
+    "subtasks": [
+      "Main and auxiliary lighting check in living room",
+      "Activity-based adjustment and curtain closing",
+      "Sleep-prep lighting and privacy check in bedroom",
+      "Power conservation and bulb health report"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Check and turn on the main lights",
+        "Check status of indirect and stand lights",
+        "Report any burnt-out bulbs",
+        "Adjust brightness for activity (reading, TV, conversation)",
+        "Close curtains to block outside view and maintain warmth"
+      ],
+      "bedroom": [
+        "Check and turn on the main light or side stand",
+        "Check location and suitability of the reading light",
+        "Close curtains or blinds for privacy",
+        "Keep only indirect lighting on if preparing for sleep",
+        "Ensure lights in unused parts of the room are off"
+      ]
+    }
+  },
+  {
+    "id": "task_016",
+    "description": "There is a bad smell in the house. Inspect the living room and bedroom to identify the source, then clean or remove it.",
+    "subtasks": [
+      "Odor source identification (trash/food/sofa) in living room",
+      "Cleaning and ventilation in living room",
+      "Textile and laundry inspection in bedroom",
+      "Waste removal and air freshening in bedroom"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Check for food or drink spills on table or carpet",
+        "Check for odors from the trash bin",
+        "Check odors on the sofa and cushions",
+        "Check for rotting soil in pots or plants",
+        "Wipe contaminated surfaces and open windows for ventilation"
+      ],
+      "bedroom": [
+        "Check the contents of the trash bin",
+        "Check for dirty laundry or piles of clothes",
+        "Check for traces of food or drinks brought in",
+        "Check odors on blankets and pillows",
+        "Remove the source (disposal, laundry) and ventilate"
+      ]
+    }
+  },
+  {
+    "id": "task_017",
+    "description": "The living room lamp is off and a book needs to be examined closely. Determine if better lighting is available elsewhere in the living room or bedroom.",
+    "subtasks": [
+      "Current lighting status and lux assessment in living room",
+      "Alternative lighting search (reading stands) in bedroom",
+      "Furniture and angle adjustment for reading",
+      "Guided relocation to optimal light source"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Check the status of the off lamp and other available lights",
+        "Determine if the main light is sufficient for reading",
+        "Evaluate if brightness is suitable (over 300 lux)",
+        "If selected, adjust the light angle and move to a comfortable seat"
+      ],
+      "bedroom": [
+        "Check the brightness of the bedroom main light",
+        "Check for reading lights or stands and their brightness",
+        "Check for spaces to sit and read (desk, bedside)",
+        "If selected, move to the bedroom and adjust light angle"
+      ]
+    }
+  },
+  {
+    "id": "task_018",
+    "description": "A guest is coming over. Make the living room presentable and the bedroom guest-ready. Check both rooms and address anything out of place.",
+    "subtasks": [
+      "Priority assessment based on room condition",
+      "Public space organization (sofa/surfaces) in living room",
+      "Private space tidying (closets/trash) in bedroom",
+      "Sensory preparation (lighting/odor)"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Organize miscellaneous items on the table",
+        "Tidy cushions and the sofa",
+        "Clear items from the floor",
+        "Set the lighting to be bright",
+        "Prepare and set out drinks and snacks"
+      ],
+      "bedroom": [
+        "Tidy blankets and pillows",
+        "Put personal items into drawers or closets",
+        "Clear clothes and items from the floor",
+        "Empty the trash bin",
+        "Remove odors through air fresheners or ventilation"
+      ],
+      "priority": [
+        "Prioritize the messier room of the two",
+        "Top priority for the living room where the guest will mainly stay",
+        "Determine the cleaning level for the bedroom based on guest access"
+      ]
+    }
+  },
+  {
+    "id": "task_019",
+    "description": "Move the alarm clock from the desk to next to the bed. Also verify the soap in the bathroom is within reach of the sink and reposition if necessary.",
+    "subtasks": [
+      "Relocation and power setup in bedroom",
+      "Alarm verification and recommendation",
+      "Reachability check and repositioning in bathroom",
+      "Supply level check and maintenance"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Check the alarm clock location on the desk",
+        "Check if space is available on the bedside side table",
+        "Clear items on the side table to secure space",
+        "Move the alarm clock to the side table",
+        "Check outlet location and connect power if needed",
+        "Check alarm time and recommend resetting if necessary"
+      ],
+      "bathroom": [
+        "Check current soap location (shelf, cabinet, tub, etc.)",
+        "Determine if it is within reaching distance while washing hands at the sink",
+        "Move it directly next to the sink if hard to reach",
+        "Move the soap dish together if present",
+        "Check for low soap levels and guide to refill",
+        "Final report on completion of both tasks"
+      ]
+    }
+  },
+  {
+    "id": "task_020",
+    "description": "Water has been left running somewhere. Search the bedroom and bathroom to find and turn it off.",
+    "subtasks": [
+      "Faucet and toilet tank inspection in bathroom",
+      "Electronic and tank overflow search in bedroom",
+      "Water source termination",
+      "Floor cleanup and safety check"
+    ],
+    "ground_truth": {
+      "bathroom": [
+        "Check for water flow in the sink faucet",
+        "Check the shower faucet",
+        "Check the bathtub faucet",
+        "Check for continuous filling sounds in the toilet tank",
+        "Check for standing water in the drain",
+        "Turn off any running faucets completely"
+      ],
+      "bedroom": [
+        "Check for humidifier overflow or over-operation",
+        "Check for spilled water bottles or tanks",
+        "Check for air conditioner drain water",
+        "Identify and report the cause of running water",
+        "Wipe up spilled water to prevent slipping"
+      ]
+    }
+  },
+  {
+    "id": "task_021",
+    "description": "Identify and remove hazards for a toddler in the bedroom and bathroom. Determine which room is more dangerous and prioritize it.",
+    "subtasks": [
+      "Small object and furniture hazard mitigation in bedroom",
+      "Chemical and slippery surface mitigation in bathroom",
+      "Room-based risk prioritization",
+      "Final safety audit (outlets/anchors)"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Clear small objects (coins, buttons, batteries) from floors/tables",
+        "Move sharp objects (scissors, knives, pins) to high places",
+        "Move medicines/vitamins to locked drawers or high shelves",
+        "Check for heavy furniture tip-over risks and confirm wall anchors",
+        "Organize or hide exposed floor cables",
+        "Check for outlet covers and recommend installation"
+      ],
+      "bathroom": [
+        "Place non-slip mats on slippery tile floors",
+        "Move detergents, shampoos, and chemicals from low to high storage",
+        "Store sharp objects like razors/scissors in locked storage",
+        "Check for standing water in the tub and ensure drainage",
+        "Close the toilet lid",
+        "Prioritize bathroom treatment due to higher risk (drowning/chemicals)"
+      ]
+    }
+  },
+  {
+    "id": "task_022",
+    "description": "Someone in the house appears to be sick. Prepare the bedroom for rest and recovery, and set up the bathroom with what they may need.",
+    "subtasks": [
+      "Recovery environment (bedding/light) in bedroom",
+      "Emergency and health monitoring prep in bedroom",
+      "Hygiene and fever management prep in bathroom",
+      "Safety and replenishment check in bathroom"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Tidy blankets and pillows for a comfortable setup",
+        "Prepare an extra blanket on the bed",
+        "Dim the lights (optimized for sleep/rest)",
+        "Close curtains (block light and noise)",
+        "Place a glass of water and medicine on the side table",
+        "Place a thermometer within reach",
+        "Connect phone to charger (for emergency contact)",
+        "Move the trash bin bedside (in case of vomiting)"
+      ],
+      "bathroom": [
+        "Hang clean towels (for cold compresses if feverish)",
+        "Organize the area around the sink (for ease of use)",
+        "Check and refill toilet paper",
+        "Check accessibility of tooth-brushing tools after vomiting",
+        "Check non-slip mats (fall risk during physical weakness)"
+      ]
+    }
+  },
+  {
+    "id": "task_023",
+    "description": "Prepare the house for a long night of studying. Set up the bedroom as the study space and ensure the bathroom is stocked to minimize interruptions.",
+    "subtasks": [
+      "Digital and visual focus optimization in bedroom",
+      "Long-term comfort and nutrition prep in bedroom",
+      "Quick-use toiletries organization in bathroom",
+      "Supply level check (paper/soap) for night use"
+    ],
+    "ground_truth": {
+      "bedroom": [
+        "Remove all unnecessary items from the desk",
+        "Set lighting to be bright (recommend stand light to minimize eye strain)",
+        "Flip the phone or set to 'Do Not Disturb' mode",
+        "Turn off the TV and unnecessary electronics",
+        "Place textbooks, writing tools, and laptop on the desk",
+        "Place water and snacks (energy bars, nuts, etc.) on the desk in advance",
+        "Adjust the chair (suitable for long hours of sitting)",
+        "Ventilate the room (recommend 10-minute ventilation for focus)"
+      ],
+      "bathroom": [
+        "Check and refill toilet paper",
+        "Check soap/hand wash levels",
+        "Confirm towels are hanging on the rack",
+        "Organize toiletries (for quick washing)",
+        "Check bathroom lighting for night use"
+      ]
+    }
+  },
+  {
+    "id": "task_024",
+    "description": "Each agent must stay in their own room throughout the task. Agents cannot move to the other room. Cooperate to prepare and serve snacks for a family movie night.",
+    "subtasks": [
+      "Isolated prep and boundary management in kitchen",
+      "Inter-agent status communication (DDS)",
+      "Room readiness and hand-off retrieval in living room"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Kitchen agent prepares snacks (popcorn, drinks)",
+        "Places prepared items in a shared pass-through area",
+        "Broadcasts status via DDS to notify that snacks are ready"
+      ],
+      "living_room": [
+        "Living room agent arranges seating and adjusts lighting",
+        "Receives snack status notification",
+        "Retrieves snacks from the shared area without crossing the kitchen boundary"
+      ]
+    }
+  },
+  {
+    "id": "task_025",
+    "description": "Prepare the home for an indoor workout session. Clear space in the living room for a yoga mat and ensure the kitchen has hydration and necessary supplies ready.",
+    "subtasks": [
+      "Floor area and furniture safety adjustment in living room",
+      "Visual and air quality optimization in living room",
+      "Pre/Post-workout hydration setup in kitchen",
+      "Safety check (wet spots) and snack prep in kitchen"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Clear a large enough floor area for a yoga mat or exercise equipment",
+        "Move small furniture (e.g., footstools, coffee tables) to the perimeter to prevent injury",
+        "Ensure the TV or tablet is positioned at eye level for workout videos",
+        "Set the lighting to a bright, energetic level and ensure proper ventilation",
+        "Place a sweat towel and any necessary equipment (dumbbells, mats) in the center"
+      ],
+      "kitchen": [
+        "Fill a water bottle or pitcher and place it in an easily accessible spot",
+        "Prepare a clean glass or tumbler for post-workout hydration",
+        "Check for and organize healthy post-workout snacks (e.g., fruit, protein bars)",
+        "Wipe any wet spots on the floor to prevent slipping during movement"
+      ]
+    }
+  },
+  {
+    "id": "task_026",
+    "description": "Guests are at the door. Plan the fastest preparation sequence.",
+    "subtasks": [
+      "High-visibility surface tidying in living room",
+      "Surface and sink cleanup in kitchen",
+      "Bed and trash management in bedroom",
+      "Essential hygiene check in bathroom"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Tidy up miscellaneous items on the table and sofa",
+        "Clear items from the floor for safe movement",
+        "Set the lighting to be bright and welcoming"
+      ],
+      "kitchen": [
+        "Complete dishwashing and organize the sink area",
+        "Wipe the counter and organize visible items"
+      ],
+      "bedroom": [
+        "Quickly tidy blankets and pillows",
+        "Empty the trash bin or hide it from view"
+      ],
+      "bathroom": [
+        "Ensure clean towels are hung and soap is available",
+        "Wipe water spots from the sink and mirror"
+      ]
+    }
+  },
+  {
+    "id": "task_027",
+    "description": "A child is coming over. Make the home safe and welcoming.",
+    "subtasks": [
+      "Floor-level safety and media setup in living room",
+      "Hazardous chemical storage and snacks in kitchen",
+      "Sharps and medication storage in bedroom",
+      "Accessibility and slip protection in bathroom"
+    ],
+    "ground_truth": {
+      "living_room": [
+        "Identify and remove small objects (coins, batteries) from the floor",
+        "Cover electrical outlets and check for sharp table corners",
+        "Set the TV to a child-safe channel or play soft music"
+      ],
+      "kitchen": [
+        "Move cleaning chemicals and detergents to high or locked storage",
+        "Prepare child-friendly snacks and drinks"
+      ],
+      "bedroom": [
+        "Move medicines and sharp objects to locked drawers or high shelves",
+        "Organize or hide exposed floor cables"
+      ],
+      "bathroom": [
+        "Place non-slip mats on the floor and close the toilet lid",
+        "Prepare a low-height stool for handwashing"
+      ]
+    }
+  },
+  {
+    "id": "task_028",
+    "description": "Prepare the kitchen and living room for a family movie night with snacks. Identify what snacks and drinks to prepare and arrange the living room seating and lighting for viewing.",
+    "subtasks": [
+      "Kitchen: Snack cooking and serving prep",
+      "Kitchen: Beverage and tray organization",
+      "Living Room: Visibility and comfort setup",
+      "Living Room: Lighting and access optimization"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Check available snack ingredients and prepare popcorn",
+        "Take drinks out from the refrigerator and set out cups and trays",
+        "Place napkins and wet wipes on the serving tray"
+      ],
+      "living_room": [
+        "Clear the line of sight to the TV and adjust sofa cushions",
+        "Place blankets on the sofa and dim the main lights",
+        "Turn on indirect or mood lighting",
+        "Place the remote control and snack tray in accessible spots"
+      ]
+    }
+  },
+  {
+    "id": "task_029",
+    "description": "Prepare the kitchen and living room for a house party. Arrange seating, set up a food/drink station in the kitchen, and tidy the living room for guests.",
+    "subtasks": [
+      "Kitchen: Self-service station and drink prep",
+      "Kitchen: Waste and cleaning capacity management",
+      "Living Room: Seating expansion and tidying",
+      "Living Room: Atmosphere and AV system check"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Clear counter space and set up a food/drink station",
+        "Arrange plates, forks, and napkins for self-service",
+        "Prepare bottled drinks in an ice bucket or refrigerated area",
+        "Empty the trash bin and prepare extra bags"
+      ],
+      "living_room": [
+        "Check the number of seats and move extra chairs from other rooms",
+        "Tidy up miscellaneous items and clear the floor",
+        "Set the lighting to bright and check the speaker system"
+      ]
+    }
+  },
+  {
+    "id": "task_030",
+    "description": "Each agent must stay in their own room throughout the task. Agents cannot move to the other room. Cooperate to prepare and serve snacks for a family movie night.",
+    "subtasks": [
+      "Kitchen: Independent snack prep and hand-off placement",
+      "Communication: Status update and coordination",
+      "Living Room: Readiness and boundary-safe retrieval"
+    ],
+    "ground_truth": {
+      "kitchen": [
+        "Kitchen agent prepares snacks and drinks independently",
+        "Places the prepared tray at the designated room boundary (handoff point)",
+        "Notifies the living room agent of task status via DDS communication"
+      ],
+      "living_room": [
+        "Living room agent prepares seating and lighting while waiting",
+        "Receives snack status notification via communication",
+        "Retrieves the tray from the boundary without entering the kitchen"
+      ]
+    }
+  }
 ]
