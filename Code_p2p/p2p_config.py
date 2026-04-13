@@ -23,7 +23,7 @@ VALID_AGENTS   = {"agent_A", "agent_B"}
 
 # ── 협상 제안 필드 ─────────────────────────────────────────────────────────────
 # NegotiationProposal.field 허용값
-VALID_PROPOSAL_FIELDS = {"time_min", "action", "handoff_type", "depends_on", "delete"}
+VALID_PROPOSAL_FIELDS = {"time_min", "action", "handoff_type", "depends_on", "delete", "add_step"}
 
 # ── 퍼지 매칭 불용어 ───────────────────────────────────────────────────────────
 FUZZY_STOPWORDS = {
