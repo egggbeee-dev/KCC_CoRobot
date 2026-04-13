@@ -777,24 +777,34 @@
     }
   },
   {
-    "id": "task_030",
-    "description": "Each agent must stay in their own room throughout the task. Agents cannot move to the other room. Cooperate to prepare and serve snacks for a family movie night.",
-    "subtasks": [
-      "Kitchen: Independent snack prep and hand-off placement",
-      "Communication: Status update and coordination",
-      "Living Room: Readiness and boundary-safe retrieval"
+  "id": "task_030",
+  "description": "Prepare the home for a long-term absence (vacation). Inspect the kitchen, bedroom, and living room to ensure all utilities are safe, windows are secured, and the security system is armed.",
+  "subtasks": [
+    "Utility and appliance safety verification in kitchen",
+    "Security and privacy setup in bedroom",
+    "Environmental and peripheral check in living room",
+    "Home-away mode transition and final report"
+  ],
+  "ground_truth": {
+    "kitchen": [
+      "Check that the stove and oven are completely turned off",
+      "Unplug small appliances (toaster, coffee maker) to prevent standby power waste",
+      "Empty the food waste bin and ensure the refrigerator door is tightly closed",
+      "Check for any signs of water leaks under the sink"
     ],
-    "ground_truth": {
-      "kitchen": [
-        "Kitchen agent prepares snacks and drinks independently",
-        "Places the prepared tray at the designated room boundary (handoff point)",
-        "Notifies the living room agent of task status via DDS communication"
-      ],
-      "living_room": [
-        "Living room agent prepares seating and lighting while waiting",
-        "Receives snack status notification via communication",
-        "Retrieves the tray from the boundary without entering the kitchen"
-      ]
-    }
+    "bedroom": [
+      "Ensure all windows and blinds are fully closed and locked",
+      "Unplug electronics and chargers from outlets",
+      "Check that all closet doors and drawers are closed",
+      "Verify that the room is clear of any active electronics (e.g., humidifiers, heaters)"
+    ],
+    "living_room": [
+      "Close the main curtains or blinds to block the view from outside",
+      "Turn off all lights, including indirect and mood lighting",
+      "Check the status of the main door lock and arm the security system",
+      "Broadcast the 'Vacation Mode' status via the home network"
+    ]
+  }
+}
   }
 ]
