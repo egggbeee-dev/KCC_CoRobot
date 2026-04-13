@@ -8,7 +8,7 @@ import math
 import re
 from typing import Any, Dict, List, Optional
 
-from p2p_config import FUZZY_STOPWORDS, VALID_AGENTS, VALID_HANDOFFS, VALID_REASONS
+from p2p_config import FUZZY_STOPWORDS, VALID_AGENTS, VALID_REASONS
 
 
 # ── 타입 변환 헬퍼 ─────────────────────────────────────────────────────────────
@@ -36,14 +36,6 @@ def jdump(obj: Any) -> str:
 def _norm_reason(r: Any) -> str:
     s = str(r).strip().upper().replace(" ", "_")
     return s if s in VALID_REASONS else "UNCERTAIN"
-
-
-def _norm_handoff(x: Any) -> Optional[str]:
-    if x is None:
-        return None
-    s = str(x).strip().upper()
-    return s if s in VALID_HANDOFFS else None
-
 
 def _norm_agent(x: Any) -> Optional[str]:
     if x is None:
@@ -203,10 +195,9 @@ def format_joint_plan(plan: List[Dict]) -> str:
     lines = []
     for s in plan:
         dep  = f" deps={s['depends_on']}" if s.get("depends_on") else ""
-        hoff = f" [{s['handoff_type']}→{s['target_agent']}]" if s.get("handoff_type") else ""
         note = f" ({s['notes']})" if s.get("notes") else ""
         lines.append(
             f"  {s['step_id']:>2}. [T={s['time_min']:>2}m] [{s['room']:<12}] [{s['agent_id']}]  "
-            f"{s['action']}{hoff}{dep}{note}"
+            f"{s['action']}{dep}{note}"
         )
     return "\n".join(lines)
