@@ -1,12 +1,5 @@
-# ══════════════════════════════════════════════════════════════════════════════
 # config.py
 # 전역 상수 및 하이퍼파라미터
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ── 태스크 기본값 ──────────────────────────────────────────────────────────────
-TASK         = None
-IMAGE_A_PATH = None
-IMAGE_B_PATH = None
 
 # ── VLM 생성 설정 ──────────────────────────────────────────────────────────────
 MAX_NEW_TOKENS = 2048
@@ -19,12 +12,6 @@ MAX_CANNOT_DO = 5
 UNCERTAINTY_THRESH = 0.50
 HQ_TOP_K           = 3
 
-# ── 리더 선출 가중치 ───────────────────────────────────────────────────────────
-ALPHA = 0.40   # coverage
-BETA  = 0.30   # mean_conf
-GAMMA = 0.20   # unc_ratio (패널티)
-DELTA = 0.10   # self_suff
-
 # ── 검증 허용 값 ───────────────────────────────────────────────────────────────
 VALID_REASONS  = {"NO_OBJECT", "NO_CAPABILITY", "UNCERTAIN"}
 
@@ -33,6 +20,10 @@ VALID_REASONS  = {"NO_OBJECT", "NO_CAPABILITY", "UNCERTAIN"}
 VALID_HANDOFFS = {"PASS", "INFORM"}
 
 VALID_AGENTS   = {"agent_A", "agent_B"}
+
+# ── 협상 제안 필드 ─────────────────────────────────────────────────────────────
+# NegotiationProposal.field 허용값
+VALID_PROPOSAL_FIELDS = {"time_min", "action", "handoff_type", "depends_on", "delete"}
 
 # ── 퍼지 매칭 불용어 ───────────────────────────────────────────────────────────
 FUZZY_STOPWORDS = {
@@ -44,23 +35,19 @@ FUZZY_STOPWORDS = {
 # ── P2P 협상 설정 ──────────────────────────────────────────────────────────────
 MAX_NEGOTIATION_ROUNDS = 3   # 협상 최대 라운드 수 (hard limit)
 
+# ── Step ID 오프셋 ─────────────────────────────────────────────────────────────
+# Agent B의 step_id를 오프셋해서 A와 충돌 방지 (100번대 = B)
+AGENT_B_STEP_OFFSET = 100
+
+# ── Human Query 자동 응답 (batch 실험용) ───────────────────────────────────────
+# None이면 실제 input() 호출, 문자열이면 모든 질문에 해당 값으로 자동 응답
+AUTO_HQ_ANSWER: str | None = None
+
 # ── LLM-as-Judge 평가 가중치 ───────────────────────────────────────────────────
 EVAL_WEIGHTS = {
-    "TS":  0.25,   # Task Success
-    "PE":  0.20,   # Plan Executability
-    "OC":  0.20,   # Observability Consistency
-    "SC":  0.15,   # Sequential Coherence
-    "CQ":  0.10,   # Collaboration Quality
-    "HQE": 0.05,   # Human Query Efficiency
-    "DC":  0.05,   # Dialogue Cost
-}
-
-EVAL_METRIC_NAMES = {
-    "TS":  "Task Success",
-    "PE":  "Plan Executability",
-    "OC":  "Observability Consistency",
-    "SC":  "Sequential Coherence",
-    "CQ":  "Collaboration Quality",
-    "HQE": "Human Query Efficiency",
-    "DC":  "Dialogue Cost",
+    "conflict_reduction": 0.35,   # 협상 전후 conflict 수 감소율
+    "convergence_rate":   0.25,   # Phase 5 수렴 조건 충족 비율
+    "negotiation_rounds": 0.15,   # 사용된 협상 라운드 수 (적을수록 좋음)
+    "observability":      0.15,   # obs_scope 준수율
+    "handoff_match":      0.10,   # PASS sender-receiver 매칭률
 }
