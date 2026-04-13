@@ -66,15 +66,6 @@ class LocalPlan:
     handoffs: List[Handoff]
 
 
-@dataclass
-class LeaderResult:
-    leader_id:   str
-    follower_id: str
-    score_a:     float
-    score_b:     float
-    reason:      str
-
-
 # ── 충돌 분류 ──────────────────────────────────────────────────────────────────
 
 class ConflictType:
@@ -96,10 +87,12 @@ class ConflictEntry:
 
 @dataclass
 class NegotiationProposal:
-    """한 에이전트가 제안하는 단일 수정 제안."""
-    step_id:         int
-    proposed_change: str   # 변경 내용 (자연어)
-    reason:          str   # 변경 이유
+    """한 에이전트가 제안하는 단일 수정 제안 (구조화된 필드 기반)."""
+    step_id:    int
+    agent_id:   str            # 수정 대상 에이전트 ("agent_A" | "agent_B")
+    field:      str            # 수정할 필드: "time_min" | "action" | "handoff_type" | "depends_on" | "delete"
+    new_value:  str            # 새 값 (항상 문자열로 직렬화; int/list는 JSON 문자열)
+    reason:     str            # 수정 이유 (conflict type 명시)
 
 
 @dataclass
@@ -107,29 +100,7 @@ class NegotiationRound:
     round_num:       int
     proposals_a:     List[NegotiationProposal]
     proposals_b:     List[NegotiationProposal]
-    locked_step_ids: List[int]   # 이 라운드 후 합의된(잠긴) step_id
-
-
-@dataclass
-class VerifyResult:
-    is_valid:            bool
-    errors:              List[str]
-    warnings:            List[str]
-    completeness_score:  float = 0.0
-    executability_score: float = 0.0
-    observability_score: float = 0.0
-    handoff_score:       float = 0.0
-    sequential_score:    float = 0.0
-
-    @property
-    def total_score(self) -> float:
-        return round(
-            self.completeness_score  * 0.25
-            + self.executability_score * 0.25
-            + self.observability_score * 0.20
-            + self.handoff_score       * 0.20
-            + self.sequential_score    * 0.10, 3
-        )
+    locked_step_ids: List[int]   # 이 라운드 후 합의된(잠긴) step_id (A-space 기준)
 
 
 @dataclass
