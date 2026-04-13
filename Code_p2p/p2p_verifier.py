@@ -101,14 +101,27 @@ def verify(plan: List[Dict], offer_a: Offer, offer_b: Offer) -> VerifyResult:
 def format_final_plan(plan: List[Dict]) -> str:
     if not plan:
         return "  (empty)"
+
+    # step_id → action 매핑 (depends_on 자연어 표현용)
+    id_to_action: Dict[int, str] = {s["step_id"]: s["action"] for s in plan}
+
+    def _dep_text(dep_ids):
+        if not dep_ids:
+            return ""
+        labels = []
+        for did in dep_ids:
+            act = id_to_action.get(did, f"step {did}")
+            labels.append(f'"{act[:35]}{"..." if len(act) > 35 else ""}')
+        return " ← after: " + ", ".join(labels)
+
     lines = []
     for s in sorted(plan, key=lambda x: (x.get("time_min", 0), x.get("step_id", 0))):
-        dep  = f" deps={s['depends_on']}" if s.get("depends_on") else ""
-        note = f" ({s['notes']})"          if s.get("notes")     else ""
+        dep_str = _dep_text(s.get("depends_on", []))
+        note    = f" ({s['notes']})" if s.get("notes") and "[COORD]" not in s.get("notes", "") else ""
         lines.append(
             f"  {s['step_id']:>2}. [T={s['time_min']:>2}m] "
             f"[{s.get('room','?'):<12}] [{s.get('agent_id','?')}]  "
-            f"{s['action']}{dep}{note}"
+            f"{s['action']}{note}{dep_str}"
         )
     return "\n".join(lines)
 
