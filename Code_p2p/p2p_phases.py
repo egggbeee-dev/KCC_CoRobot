@@ -1,31 +1,37 @@
-# ══════════════════════════════════════════════════════════════════════════════
 # phases.py
 #
 # Phase 1 : Observation & Offer Generation
 # Phase 2 : Local Planning (각 에이전트 독립)
 # Phase 3 : Conflict Detection  (temporal / dependency / redundancy / ...)
-# Phase 4 : P2P Negotiation     (최대 MAX_NEGOTIATION_ROUNDS 라운드)
+# Phase 4 : P2P Negotiation     (최대 MAX_NEGOTIATION_ROUNDS 라운드, 구조화 제안)
 # Phase 5 : Convergence Check   (rule-based, LLM 판단 없음)
 # Phase 6 : Deferred Human Query (필요할 때만)
-# Finalize: Joint Plan 확정
-# ══════════════════════════════════════════════════════════════════════════════
+# Finalize: Rule-based merge (LLM 호출 없음)
 
 from __future__ import annotations
 
 import json
 import re
+import sys
+from collections import deque
 from dataclasses import asdict
 from typing import Dict, List, Optional, Set, Tuple
 
 from p2p_config import (
-    ALPHA, BETA, GAMMA, DELTA,
-    HQ_TOP_K, MAX_CAN_DO, MAX_CANNOT_DO,
+    AGENT_B_STEP_OFFSET,
+    AUTO_HQ_ANSWER,
+    FUZZY_STOPWORDS,
+    HQ_TOP_K,
+    MAX_CAN_DO,
+    MAX_CANNOT_DO,
     MAX_NEGOTIATION_ROUNDS,
-    UNCERTAINTY_THRESH, VALID_AGENTS,
+    UNCERTAINTY_THRESH,
+    VALID_AGENTS,
+    VALID_PROPOSAL_FIELDS,
 )
 from p2p_models import (
     CannotEntry, ConflictEntry, ConflictType,
-    ConvergenceResult, HQEntry, Handoff, LeaderResult,
+    ConvergenceResult, HQEntry, Handoff,
     LocalPlan, NegotiationProposal, NegotiationRound,
     Offer, PlanStep,
 )
@@ -228,7 +234,7 @@ def phase1_offer(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PHASE 2: OFFER-CONDITIONED LOCAL PLANNING (두 에이전트 독립적으로)
+# PHASE 2: OFFER-CONDITIONED LOCAL PLANNING
 # ──────────────────────────────────────────────────────────────────────────────
 
 PHASE2_FEW_SHOT = """
@@ -345,8 +351,13 @@ Generate your LOCAL PLAN independently:
 
 
 def _parse_local_plan(
-    raw: str, log_probs: List[float], my: Offer, use_handoff: bool = True
+    raw: str, log_probs: List[float], my: Offer,
+    use_handoff: bool = True, step_offset: int = 0,
 ) -> LocalPlan:
+    """
+    step_offset: Agent B의 step_id를 오프셋해서 A와 충돌 방지
+                 agent_A → 0, agent_B → AGENT_B_STEP_OFFSET
+    """
     data      = extract_json(raw)
     raw_steps = data.get("plan_steps", [])
     if not isinstance(raw_steps, list):
@@ -365,7 +376,9 @@ def _parse_local_plan(
         if not action:
             continue
 
-        sid = safe_int(item.get("step_id", i), i)
+        # step_id에 오프셋 적용
+        raw_sid = safe_int(item.get("step_id", i), i)
+        sid = raw_sid + step_offset
         while sid in seen_ids:
             sid += 1
         seen_ids.add(sid)
@@ -384,6 +397,10 @@ def _parse_local_plan(
         handoff_type = _norm_handoff(item.get("handoff_type")) if use_handoff else None
         target       = _norm_agent(item.get("target_agent"))   if use_handoff else None
 
+        # depends_on도 오프셋 적용 (자기 플랜 내 참조)
+        raw_deps = _norm_depends(item.get("depends_on"))
+        deps = [d + step_offset for d in raw_deps]
+
         step = PlanStep(
             step_id       = sid,
             time_min      = max(0, min(30, safe_int(item.get("time_min", 0), 0))),
@@ -391,7 +408,7 @@ def _parse_local_plan(
             agent_id      = my.agent_id,
             action        = action,
             preconditions = [str(x).strip() for x in item.get("preconditions", []) if str(x).strip()],
-            depends_on    = _norm_depends(item.get("depends_on")),
+            depends_on    = deps,
             handoff_type  = handoff_type,
             target_agent  = target,
             uncertainty   = step_unc,
@@ -427,8 +444,9 @@ def phase2_local_plan(
         _log("AGENT A RAW LOCAL PLAN", raw_a)
         _log("AGENT B RAW LOCAL PLAN", raw_b)
 
-    plan_a = _parse_local_plan(raw_a, logp_a, offer_a, use_handoff)
-    plan_b = _parse_local_plan(raw_b, logp_b, offer_b, use_handoff)
+    # Agent A: offset=0, Agent B: offset=AGENT_B_STEP_OFFSET (step_id 충돌 방지)
+    plan_a = _parse_local_plan(raw_a, logp_a, offer_a, use_handoff, step_offset=0)
+    plan_b = _parse_local_plan(raw_b, logp_b, offer_b, use_handoff, step_offset=AGENT_B_STEP_OFFSET)
 
     if verbose in ("full", "summary"):
         _log("PARSED LOCAL PLAN A", jdump(local_plan_to_dict(plan_a)))
@@ -449,7 +467,6 @@ def phase2_local_plan(
 
 def _resource_keywords(action: str) -> Set[str]:
     """액션에서 자원 키워드 추출 (불용어 제거)."""
-    from p2p_config import FUZZY_STOPWORDS
     words = set(re.findall(r"\w+", action.lower()))
     return words - FUZZY_STOPWORDS
 
@@ -478,7 +495,6 @@ def detect_conflicts(
     all_steps = [(s, offer_a) for s in steps_a] + [(s, offer_b) for s in steps_b]
 
     # ── 1. TEMPORAL conflict ─────────────────────────────────────────────────
-    # 같은 time_min 슬롯에서 두 에이전트가 같은 자원 키워드를 쓰는 경우
     time_slots: Dict[int, List[PlanStep]] = {}
     for s in steps_a + steps_b:
         time_slots.setdefault(s.time_min, []).append(s)
@@ -506,13 +522,13 @@ def detect_conflicts(
                     ))
 
     # ── 2. DEPENDENCY conflict ───────────────────────────────────────────────
-    # A가 B의 결과를 필요로 하는데 B의 PASS handoff가 없거나 A의 receive step이 없는 경우
-    pass_senders_a = {h.target_agent for h in plan_a.handoffs if h.handoff_type == "PASS"}
-    pass_senders_b = {h.target_agent for h in plan_b.handoffs if h.handoff_type == "PASS"}
+    # PASS handoff 선언이 있는 target 집합
+    pass_targets_from_b = {h.target_agent for h in plan_b.handoffs if h.handoff_type == "PASS"}
+    pass_targets_from_a = {h.target_agent for h in plan_a.handoffs if h.handoff_type == "PASS"}
 
     for need in offer_a.need_from_other:
         matched_provide = any(_fuzzy_match_soft(need, p) for p in offer_b.can_provide)
-        has_pass = "agent_A" in pass_senders_b   # B가 A에게 PASS 선언
+        has_pass = "agent_A" in pass_targets_from_b
         if matched_provide and not has_pass:
             conflicts.append(ConflictEntry(
                 conflict_type = ConflictType.DEPENDENCY,
@@ -526,7 +542,7 @@ def detect_conflicts(
 
     for need in offer_b.need_from_other:
         matched_provide = any(_fuzzy_match_soft(need, p) for p in offer_a.can_provide)
-        has_pass = "agent_B" in pass_senders_a   # A가 B에게 PASS 선언
+        has_pass = "agent_B" in pass_targets_from_a
         if matched_provide and not has_pass:
             conflicts.append(ConflictEntry(
                 conflict_type = ConflictType.DEPENDENCY,
@@ -568,9 +584,8 @@ def detect_conflicts(
 
     # ── 5. OBSERVABILITY violation ───────────────────────────────────────────
     for step, offer in all_steps:
-        scope_kw = set(re.findall(r"\w+", offer.obs_scope.lower()))
+        scope_kw  = set(re.findall(r"\w+", offer.obs_scope.lower()))
         action_kw = _resource_keywords(step.action)
-        # INFORM/receive 스텝은 skip
         if step.action.lower().startswith(("inform", "receive")):
             continue
         if step.handoff_type == "PASS":
@@ -591,15 +606,10 @@ def detect_conflicts(
         h.step_id for h in plan_a.handoffs + plan_b.handoffs
         if h.handoff_type == "PASS"
     }
-    all_depends = {
-        dep
-        for s in steps_a + steps_b
-        for dep in s.depends_on
-    }
+    all_depends = {dep for s in steps_a + steps_b for dep in s.depends_on}
+
     for sid in all_pass_step_ids:
         if sid not in all_depends:
-            # PASS sender step에 대응하는 receiver 스텝 없음
-            # (step_id는 각 로컬플랜 내 id라 전체 비교는 approximation)
             conflicts.append(ConflictEntry(
                 conflict_type = ConflictType.HANDOFF,
                 step_ids      = [sid],
@@ -640,7 +650,7 @@ def phase3_conflict_detection(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PHASE 4: PEER-TO-PEER NEGOTIATION
+# PHASE 4: PEER-TO-PEER NEGOTIATION (구조화 제안 기반)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _conflict_to_str(c: ConflictEntry) -> str:
@@ -656,39 +666,41 @@ def _build_negotiation_prompt(
     conflicts:       List[ConflictEntry],
     locked_step_ids: Set[int],
     round_num:       int,
-    prev_proposals:  List[NegotiationProposal],   # 상대방이 이전에 제안한 것
+    prev_proposals:  List[NegotiationProposal],
     task:            str,
 ) -> str:
     conflict_text = "\n".join(f"  - {_conflict_to_str(c)}" for c in conflicts) or "  (none)"
     locked_text   = str(sorted(locked_step_ids)) if locked_step_ids else "(none)"
+
     prev_text = (
         "\n".join(
-            f"  step {p.step_id}: '{p.proposed_change}' — reason: {p.reason}"
+            f"  step {p.step_id} [{p.agent_id}]: field='{p.field}' → new_value='{p.new_value}' | reason: {p.reason}"
             for p in prev_proposals
         )
         or "  (none)"
     )
+
     my_plan    = current_plan_a if my_agent == "agent_A" else current_plan_b
     other_plan = current_plan_b if my_agent == "agent_A" else current_plan_a
     other_id   = "agent_B" if my_agent == "agent_A" else "agent_A"
 
-    return f"""You are {my_agent} ({my_offer.room_type}). This is NEGOTIATION ROUND {round_num}/{MAX_NEGOTIATION_ROUNDS}.
+    return f"""You are {my_agent} ({my_offer.room_type}). NEGOTIATION ROUND {round_num}/{MAX_NEGOTIATION_ROUNDS}.
 
 Global task: "{task}"
 
-YOUR CURRENT PLAN:
+YOUR CURRENT PLAN (agent_id={my_agent}):
 {jdump(my_plan)}
 
 {other_id}'s CURRENT PLAN:
 {jdump(other_plan)}
 
-DETECTED CONFLICTS (negotiation targets only):
+DETECTED CONFLICTS (only these need resolution):
 {conflict_text}
 
-LOCKED STEPS (already agreed — do NOT modify):
+LOCKED STEPS (already agreed — do NOT propose changes to these):
 {locked_text}
 
-{other_id}'s PREVIOUS PROPOSALS (consider accepting or counter-proposing):
+{other_id}'s PREVIOUS PROPOSALS (consider accepting with reason="ACCEPT" or counter-proposing):
 {prev_text}
 
 YOUR CAPABILITIES:
@@ -697,77 +709,101 @@ YOUR CAPABILITIES:
 - obs_scope: {my_offer.obs_scope}
 
 INSTRUCTIONS:
-1. Review the detected conflicts above.
-2. For EACH conflict, propose a minimal change to ONE step that resolves it.
-   - You may only propose changes to steps that are NOT locked.
-   - Prefer modifying your own steps; only propose changes to {other_id}'s steps if truly necessary.
-   - If you accept {other_id}'s proposal, include it as-is with reason "ACCEPT".
-3. Output proposals as a JSON list. Each proposal: {{step_id, proposed_change, reason}}.
-4. If no change is needed for a conflict (already resolved), skip it.
-5. Return ONLY valid JSON inside <JSON> tags.
+1. For each conflict, propose ONE minimal change that resolves it.
+2. Only propose changes to steps NOT in the locked list.
+3. Prefer modifying your OWN steps. Only modify {other_id}'s steps if truly necessary.
+4. If you accept {other_id}'s proposal unchanged, set reason="ACCEPT".
+5. Each proposal MUST use one of these fields:
+   - "time_min"     : shift timing (new_value = integer as string, e.g. "15")
+   - "action"       : rewrite the action text (new_value = new action string)
+   - "handoff_type" : add/change handoff ("PASS" | "INFORM" | "null")
+   - "depends_on"   : set dependency list (new_value = JSON array string, e.g. "[3, 5]")
+   - "delete"       : remove the step entirely (new_value = "true")
+6. If no change is needed, return an empty proposals list.
+7. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
   "proposals": [
     {{
       "step_id": 3,
-      "proposed_change": "shift time_min from 10 to 15 to avoid resource conflict",
-      "reason": "TEMPORAL conflict with step 2 at T=10"
+      "agent_id": "{my_agent}",
+      "field": "time_min",
+      "new_value": "15",
+      "reason": "TEMPORAL conflict with step {AGENT_B_STEP_OFFSET + 2} at T=10"
     }}
   ]
 }}
 </JSON>"""
 
 
-def _parse_proposals(raw: str) -> List[NegotiationProposal]:
-    data = extract_json(raw)
+def _parse_proposals(raw: str, my_agent: str) -> List[NegotiationProposal]:
+    data   = extract_json(raw)
     result = []
     for item in data.get("proposals", []):
         if not isinstance(item, dict):
             continue
-        sid     = safe_int(item.get("step_id", -1), -1)
-        change  = str(item.get("proposed_change", "")).strip()
-        reason  = str(item.get("reason", "")).strip()
-        if sid >= 0 and change:
-            result.append(NegotiationProposal(sid, change, reason))
+        sid       = safe_int(item.get("step_id", -1), -1)
+        agent_id  = str(item.get("agent_id", my_agent)).strip()
+        field     = str(item.get("field", "")).strip().lower()
+        new_value = str(item.get("new_value", "")).strip()
+        reason    = str(item.get("reason", "")).strip()
+
+        if sid < 0 or field not in VALID_PROPOSAL_FIELDS or not new_value:
+            continue
+        if agent_id not in VALID_AGENTS:
+            agent_id = my_agent
+
+        result.append(NegotiationProposal(sid, agent_id, field, new_value, reason))
     return result
 
 
-def _apply_proposals_to_plan(
-    plan_steps: List[Dict],
-    proposals:  List[NegotiationProposal],
-    locked_ids: Set[int],
-) -> List[Dict]:
+def _apply_proposal(plan: List[Dict], proposal: NegotiationProposal, locked_ids: Set[int]) -> bool:
     """
-    제안을 플랜에 적용한다. 잠긴 스텝은 수정하지 않는다.
-    proposals는 자연어로 변경을 기술하므로 LLM 호출 없이 가능한 부분만 적용:
-      - time_min 조정: "shift time_min to X" 패턴 탐지
-      - 그 외 변경은 notes에 기록 (joint plan 시 LLM이 참고)
+    제안을 플랜에 직접 적용한다. 변경이 이루어지면 True 반환.
+    locked step은 건드리지 않는다.
     """
-    plan = [dict(s) for s in plan_steps]
+    if proposal.step_id in locked_ids:
+        return False
+
     sid_map = {s["step_id"]: i for i, s in enumerate(plan)}
+    if proposal.step_id not in sid_map:
+        return False
 
-    for prop in proposals:
-        if prop.step_id in locked_ids:
-            continue
-        if prop.step_id not in sid_map:
-            continue
-        idx = sid_map[prop.step_id]
+    idx = sid_map[proposal.step_id]
 
-        # time_min 조정 파턴 탐지
-        m = re.search(r"time_min\s+(?:from\s+\d+\s+)?to\s+(\d+)", prop.proposed_change, re.I)
-        if m:
-            new_t = max(0, min(30, int(m.group(1))))
+    if proposal.field == "delete":
+        plan.pop(idx)
+        return True
+
+    if proposal.field == "time_min":
+        new_t = safe_int(proposal.new_value, -1)
+        if 0 <= new_t <= 30:
             plan[idx]["time_min"] = new_t
+            return True
 
-        # notes에 제안 내용 추가 (finalize 시 참고)
-        existing_notes = plan[idx].get("notes", "")
-        plan[idx]["notes"] = (
-            (existing_notes + " | " if existing_notes else "")
-            + f"[NEG R{prop.step_id}] {prop.proposed_change}"
-        )
+    elif proposal.field == "action":
+        if proposal.new_value:
+            plan[idx]["action"] = proposal.new_value
+            return True
 
-    return plan
+    elif proposal.field == "handoff_type":
+        ht = _norm_handoff(proposal.new_value)
+        plan[idx]["handoff_type"] = ht
+        if ht is None:
+            plan[idx]["target_agent"] = None
+        return True
+
+    elif proposal.field == "depends_on":
+        try:
+            deps = json.loads(proposal.new_value)
+            if isinstance(deps, list):
+                plan[idx]["depends_on"] = [int(d) for d in deps]
+                return True
+        except Exception:
+            pass
+
+    return False
 
 
 def _lock_agreed_steps(
@@ -777,12 +813,24 @@ def _lock_agreed_steps(
     existing_locked: Set[int],
 ) -> Set[int]:
     """
-    두 에이전트가 같은 step_id에 대해 제안이 없거나 ACCEPT한 경우 lock.
-    즉, conflict_step_ids 중 양측이 이의를 제기하지 않은 step은 lock.
+    합의 기준:
+    1. 한쪽이 제안하고 상대방이 reason="ACCEPT"로 응답한 경우 → lock
+    2. 양쪽 모두 해당 step에 대해 제안이 없는 경우 → lock (이미 OK)
     """
-    contested = {p.step_id for p in proposals_a + proposals_b}
-    newly_locked = conflict_step_ids - contested
-    return existing_locked | newly_locked
+    # ACCEPT된 step_id 수집
+    accepted_by_b = {p.step_id for p in proposals_b if p.reason.upper() == "ACCEPT"}
+    accepted_by_a = {p.step_id for p in proposals_a if p.reason.upper() == "ACCEPT"}
+    proposed_by_a = {p.step_id for p in proposals_a if p.reason.upper() != "ACCEPT"}
+    proposed_by_b = {p.step_id for p in proposals_b if p.reason.upper() != "ACCEPT"}
+
+    # A가 제안하고 B가 ACCEPT → lock
+    mutually_agreed = (proposed_by_a & accepted_by_b) | (proposed_by_b & accepted_by_a)
+
+    # 양쪽 모두 언급 없는 conflict step → 이미 해결된 것으로 간주 lock
+    all_mentioned = {p.step_id for p in proposals_a + proposals_b}
+    uncontested   = conflict_step_ids - all_mentioned
+
+    return existing_locked | mutually_agreed | uncontested
 
 
 def phase4_negotiation(
@@ -799,10 +847,8 @@ def phase4_negotiation(
 ) -> Tuple[List[Dict], List[Dict], List[NegotiationRound]]:
     """
     P2P 협상: 최대 MAX_NEGOTIATION_ROUNDS 라운드.
-    충돌이 있는 스텝만 협상 대상으로 삼고, 합의된 스텝은 라운드마다 lock한다.
-
-    Returns:
-        (negotiated_steps_a, negotiated_steps_b, rounds_history)
+    구조화된 제안(field/new_value)을 플랜에 직접 적용.
+    합의된 step은 매 라운드마다 lock하여 다음 라운드에서 수정 불가.
     """
     _banner("PHASE 4 — PEER-TO-PEER NEGOTIATION")
 
@@ -815,7 +861,7 @@ def phase4_negotiation(
         )
 
     conflict_step_ids: Set[int] = {sid for c in conflicts for sid in c.step_ids}
-    print(f"  Conflict step IDs to negotiate: {sorted(conflict_step_ids)}")
+    print(f"  Conflict step IDs: {sorted(conflict_step_ids)}")
     print(f"  Max rounds: {MAX_NEGOTIATION_ROUNDS}")
 
     cur_a: List[Dict] = plan_steps_to_dicts(plan_a.steps)
@@ -827,7 +873,6 @@ def phase4_negotiation(
     prev_props_b: List[NegotiationProposal] = []
 
     for rnd in range(1, MAX_NEGOTIATION_ROUNDS + 1):
-        # 남은 충돌만 협상
         remaining = [
             c for c in conflicts
             if not all(sid in locked for sid in c.step_ids) or not c.step_ids
@@ -837,41 +882,47 @@ def phase4_negotiation(
             break
 
         print(f"\n  ── Round {rnd}/{MAX_NEGOTIATION_ROUNDS} "
-              f"(remaining conflicts: {len(remaining)}, locked: {sorted(locked)}) ──")
+              f"(remaining: {len(remaining)}, locked: {sorted(locked)}) ──")
 
-        # Agent A의 제안 생성
         prompt_a = _build_negotiation_prompt(
-            "agent_A", offer_a, offer_b,
-            cur_a, cur_b,
+            "agent_A", offer_a, offer_b, cur_a, cur_b,
             remaining, locked, rnd, prev_props_b, task,
         )
         raw_a, _ = run_vlm(img_a, prompt_a)
-        props_a  = _parse_proposals(raw_a)
+        props_a  = _parse_proposals(raw_a, "agent_A")
 
-        # Agent B의 제안 생성
         prompt_b = _build_negotiation_prompt(
-            "agent_B", offer_b, offer_a,
-            cur_a, cur_b,
+            "agent_B", offer_b, offer_a, cur_a, cur_b,
             remaining, locked, rnd, prev_props_a, task,
         )
         raw_b, _ = run_vlm(img_b, prompt_b)
-        props_b  = _parse_proposals(raw_b)
+        props_b  = _parse_proposals(raw_b, "agent_B")
 
         if verbose == "full":
             _log(f"ROUND {rnd} AGENT A RAW", raw_a)
             _log(f"ROUND {rnd} AGENT B RAW", raw_b)
 
         if verbose in ("full", "summary"):
-            print(f"  A proposals ({len(props_a)}): "
-                  + ", ".join(f"step{p.step_id}→'{p.proposed_change[:40]}...'" for p in props_a))
-            print(f"  B proposals ({len(props_b)}): "
-                  + ", ".join(f"step{p.step_id}→'{p.proposed_change[:40]}...'" for p in props_b))
+            for p in props_a:
+                print(f"  [A→{p.agent_id}] step{p.step_id} {p.field}='{p.new_value}' ({p.reason})")
+            for p in props_b:
+                print(f"  [B→{p.agent_id}] step{p.step_id} {p.field}='{p.new_value}' ({p.reason})")
 
-        # 제안 적용
-        cur_a = _apply_proposals_to_plan(cur_a, props_b, locked)  # A plan ← B 제안
-        cur_b = _apply_proposals_to_plan(cur_b, props_a, locked)  # B plan ← A 제안
+        # 제안을 해당 플랜에 직접 적용
+        # A의 제안 → A 또는 B 플랜에 적용
+        for prop in props_a:
+            target_plan = cur_a if prop.agent_id == "agent_A" else cur_b
+            changed = _apply_proposal(target_plan, prop, locked)
+            if changed and verbose in ("full", "summary"):
+                print(f"  [APPLIED A] step{prop.step_id}.{prop.field}={prop.new_value}")
 
-        # 이번 라운드에서 합의된 step lock
+        # B의 제안 → A 또는 B 플랜에 적용
+        for prop in props_b:
+            target_plan = cur_a if prop.agent_id == "agent_A" else cur_b
+            changed = _apply_proposal(target_plan, prop, locked)
+            if changed and verbose in ("full", "summary"):
+                print(f"  [APPLIED B] step{prop.step_id}.{prop.field}={prop.new_value}")
+
         locked = _lock_agreed_steps(props_a, props_b, conflict_step_ids, locked)
 
         round_result = NegotiationRound(
@@ -881,7 +932,6 @@ def phase4_negotiation(
             locked_step_ids = sorted(locked),
         )
         rounds.append(round_result)
-
         print(f"  → Locked after round {rnd}: {sorted(locked)}")
 
         prev_props_a = props_a
@@ -898,7 +948,6 @@ def phase4_negotiation(
 
 def _has_cycle(steps: List[Dict]) -> bool:
     """Kahn's algorithm으로 depends_on cycle 탐지."""
-    from collections import deque
     indegree = {s["step_id"]: 0 for s in steps}
     adj: Dict[int, List[int]] = {s["step_id"]: [] for s in steps}
 
@@ -922,10 +971,10 @@ def _has_cycle(steps: List[Dict]) -> bool:
 
 
 def phase5_convergence_check(
-    steps_a:  List[Dict],
-    steps_b:  List[Dict],
-    offer_a:  Offer,
-    offer_b:  Offer,
+    steps_a:   List[Dict],
+    steps_b:   List[Dict],
+    offer_a:   Offer,
+    offer_b:   Offer,
     conflicts: List[ConflictEntry],
 ) -> ConvergenceResult:
     """
@@ -950,9 +999,9 @@ def phase5_convergence_check(
         s["step_id"] for s in all_steps
         if s.get("handoff_type") == "PASS"
     }
-    all_depends = {dep for s in all_steps for dep in s.get("depends_on", [])}
+    all_depends   = {dep for s in all_steps for dep in s.get("depends_on", [])}
     unmatched_pass = pass_step_ids - all_depends
-    pass_matched = len(unmatched_pass) == 0
+    pass_matched   = len(unmatched_pass) == 0
 
     # -- 조건 2: cycle 없음 -------------------------------------------------------
     no_dep_cycle = not _has_cycle(all_steps)
@@ -975,7 +1024,6 @@ def phase5_convergence_check(
             break
 
     # -- 미해결 충돌 목록 ----------------------------------------------------------
-    # 수렴 후에도 남은 CANNOT_DO / REDUNDANCY만 경고
     unresolved = [
         c for c in conflicts
         if c.conflict_type in (ConflictType.CANNOT_DO, ConflictType.REDUNDANCY)
@@ -986,7 +1034,7 @@ def phase5_convergence_check(
     print(f"  PASS matched     : {'✓' if pass_matched else '✗'} (unmatched={unmatched_pass})")
     print(f"  No dep cycle     : {'✓' if no_dep_cycle else '✗'}")
     print(f"  Observability OK : {'✓' if obs_ok else '✗'}")
-    print(f"  → Converged      : {'YES ✓' if converged else 'NO — will auto-finalize anyway'}")
+    print(f"  → Converged      : {'YES ✓' if converged else 'NO'}")
     if unresolved:
         print(f"  ⚠ Residual conflicts ({len(unresolved)}):")
         for c in unresolved:
@@ -1005,27 +1053,12 @@ def phase5_convergence_check(
 # PHASE 6: DEFERRED HUMAN QUERY (필요 시에만)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _detect_contradiction(offer_a: Offer, offer_b: Offer) -> List[str]:
-    result = []
-    b_cannot = [c.action for c in offer_b.cannot_do]
-    a_cannot = [c.action for c in offer_a.cannot_do]
-    for action in offer_a.can_do:
-        matches = [bc for bc in b_cannot if _fuzzy_match(action, bc, min_overlap=3)]
-        if matches:
-            result.append(f"A can_do '{action}' conflicts with B cannot_do '{matches[0]}'")
-    for action in offer_b.can_do:
-        matches = [ac for ac in a_cannot if _fuzzy_match(action, ac, min_overlap=3)]
-        if matches:
-            result.append(f"B can_do '{action}' conflicts with A cannot_do '{matches[0]}'")
-    return result
-
-
 def _generate_hq_question(
     trigger_type: str,
     detail: str,
     offer_a: Offer,
     offer_b: Offer,
-    leader_img: str,
+    img: str,
 ) -> str:
     prompt = f"""You are coordinating two home agents working on a task.
 
@@ -1035,11 +1068,9 @@ Agent B ({offer_b.room_type}) can do: {json.dumps(offer_b.can_do, ensure_ascii=F
 Issue detected ({trigger_type}): {detail}
 
 Generate ONE clear, specific, actionable question to ask the human operator.
-The question should help resolve the issue above.
-Write ONLY the question, no preamble or explanation.
-Keep it under 2 sentences."""
+Write ONLY the question, no preamble or explanation. Keep it under 2 sentences."""
 
-    question, _ = run_vlm(leader_img, prompt)
+    question, _ = run_vlm(img, prompt)
     question = question.strip().strip('"').strip("'")
     if not question or len(question) > 300:
         return f"[{trigger_type}] {detail} — How should the agents handle this?"
@@ -1057,8 +1088,8 @@ def phase6_human_query(
     use_human_query: bool = True,
 ) -> Tuple[Dict[str, str], List[str], List[str]]:
     """
-    수렴 체크 후에도 해결되지 않은 충돌이나 불확실성이 높은 경우에만 human query를 발동한다.
-    수렴했으면 skip.
+    수렴 체크 후에도 해결되지 않은 충돌이나 불확실성이 높은 경우에만 발동.
+    AUTO_HQ_ANSWER가 설정된 경우 input() 없이 자동 응답 (batch 실험용).
     """
     _banner("PHASE 6 — DEFERRED HUMAN QUERY")
 
@@ -1070,36 +1101,28 @@ def phase6_human_query(
         print("  Plan converged with no residual issues → no human query needed.")
         return {}, [], []
 
-    # leader는 score 높은 쪽으로 (간단히 plan_a 기준)
-    leader_img = img_a
     triggered: List[str] = []
     raw_triggers: List[Tuple[str, str, float]] = []
 
-    # 미매칭 PASS
     if not convergence.pass_matched:
         detail = "Some PASS handoffs have no matching receiver step after negotiation"
         triggered.append(f"[HQ1] {detail}")
         raw_triggers.append(("UNMATCHED_PASS", detail, 0.90))
 
-    # cycle 존재
     if not convergence.no_dep_cycle:
         detail = "Dependency cycle detected in the joint plan after negotiation"
         triggered.append(f"[HQ2] {detail}")
         raw_triggers.append(("DEP_CYCLE", detail, 0.85))
 
-    # 잔존 충돌
     for c in convergence.unresolved_conflicts:
-        detail = c.description
-        triggered.append(f"[HQ3-{c.conflict_type}] {detail}")
-        raw_triggers.append((c.conflict_type, detail, 0.80))
+        triggered.append(f"[HQ3-{c.conflict_type}] {c.description}")
+        raw_triggers.append((c.conflict_type, c.description, 0.80))
 
-    # 높은 불확실성
     if plan_a.U_plan > UNCERTAINTY_THRESH or plan_b.U_plan > UNCERTAINTY_THRESH:
         detail = f"Plan uncertainty remains high (A:{plan_a.U_plan:.3f}, B:{plan_b.U_plan:.3f})"
         triggered.append(f"[HQ4] {detail}")
         raw_triggers.append(("HIGH_UNCERTAINTY", detail, 0.70))
 
-    # 미충족 need
     all_provides = offer_a.can_provide + offer_b.can_provide
     for need in offer_a.need_from_other + offer_b.need_from_other:
         if not any(_fuzzy_match_soft(need, p) for p in all_provides):
@@ -1121,14 +1144,21 @@ def phase6_human_query(
 
     for i, (ttype, detail, u) in enumerate(raw_triggers[:HQ_TOP_K], 1):
         print(f"\n  Generating Q{i} [{ttype}, priority={u:.2f}]...", end=" ", flush=True)
-        question = _generate_hq_question(ttype, detail, offer_a, offer_b, leader_img)
+        question = _generate_hq_question(ttype, detail, offer_a, offer_b, img_a)
         print("done")
         print(f"  Q{i}: {question}")
         asked.append(question)
-        try:
-            ans = input("  A: ").strip()
-        except EOFError:
-            ans = ""
+
+        # AUTO_HQ_ANSWER가 설정되면 input() 없이 자동 응답
+        if AUTO_HQ_ANSWER is not None:
+            ans = AUTO_HQ_ANSWER
+            print(f"  A (auto): {ans}")
+        else:
+            try:
+                ans = input("  A: ").strip()
+            except EOFError:
+                ans = ""
+
         if ans:
             answers[question] = ans
 
@@ -1136,222 +1166,48 @@ def phase6_human_query(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# FINALIZE: JOINT PLAN 확정 (rule-based auto-finalize)
+# FINALIZE: RULE-BASED MERGE (LLM 호출 없음)
 # ──────────────────────────────────────────────────────────────────────────────
 
-FINALIZE_FEW_SHOT = """
-EXAMPLE JOINT PLAN (agent_A sends snacks to agent_B):
-<JSON>
-{
-  "joint_plan": [
-    {
-      "step_id": 1, "time_min": 0,
-      "room": "kitchen", "agent_id": "agent_A",
-      "action": "place fruits from island onto serving tray",
-      "preconditions": [], "depends_on": [],
-      "handoff_type": null, "target_agent": null, "notes": "PARALLEL with step 2"
-    },
-    {
-      "step_id": 2, "time_min": 0,
-      "room": "living room", "agent_id": "agent_B",
-      "action": "arrange cushions on sofa",
-      "preconditions": [], "depends_on": [],
-      "handoff_type": null, "target_agent": null, "notes": "PARALLEL with step 1"
-    },
-    {
-      "step_id": 3, "time_min": 10,
-      "room": "kitchen", "agent_id": "agent_A",
-      "action": "carry snack tray to kitchen doorway for agent_B pickup",
-      "preconditions": ["snacks arranged on tray"], "depends_on": [1],
-      "handoff_type": "PASS", "target_agent": "agent_B",
-      "notes": "snack tray ready at doorway"
-    },
-    {
-      "step_id": 4, "time_min": 11,
-      "room": "living room", "agent_id": "agent_B",
-      "action": "receive snack tray and place on coffee table",
-      "preconditions": ["snack tray at doorway"], "depends_on": [3],
-      "handoff_type": null, "target_agent": null,
-      "notes": "receives from agent_A PASS step 3"
-    },
-    {
-      "step_id": 5, "time_min": 15,
-      "room": "kitchen", "agent_id": "agent_A",
-      "action": "INFORM agent_B: kitchen preparation complete",
-      "preconditions": [], "depends_on": [3],
-      "handoff_type": "INFORM", "target_agent": "agent_B",
-      "notes": "kitchen ready"
-    }
-  ]
-}
-</JSON>
-
-CRITICAL HANDOFF RULES:
-- PASS is declared by the SENDER only. Receiver adds a step with depends_on=[PASS step_id], NO handoff_type.
-- INFORM is for status notification only, no physical item transfer.
-- room: EXACT room name from offer
-- agent_id: EXACTLY "agent_A" or "agent_B"
-- Total steps: 6–10 only.
-- Both agents must finish within 5 minutes of each other.
-""".strip()
-
-
-def _build_finalize_prompt(
-    steps_a:       List[Dict],
-    steps_b:       List[Dict],
-    offer_a:       Offer,
-    offer_b:       Offer,
-    human_answers: Dict[str, str],
-    convergence:   ConvergenceResult,
-    task:          str,
-) -> str:
-    hq_str = (
-        "\n".join(f"  Q: {q}\n  A: {a}" for q, a in human_answers.items())
-        if human_answers else "  (none)"
-    )
-    convergence_notes = []
-    if not convergence.pass_matched:
-        convergence_notes.append("⚠ Some PASS steps still unmatched — add receiver steps.")
-    if not convergence.no_dep_cycle:
-        convergence_notes.append("⚠ Dependency cycle detected — remove circular depends_on.")
-    if not convergence.observability_ok:
-        convergence_notes.append("⚠ Some steps exceed obs_scope — restrict to visible objects.")
-    conv_str = "\n".join(convergence_notes) if convergence_notes else "✓ All convergence conditions met."
-
-    return f"""You are finalizing a collaborative plan for: "{task}"
-
-AGENT A ({offer_a.room_type}):
-  can_do   : {json.dumps(offer_a.can_do, ensure_ascii=False)}
-  obs_scope: {offer_a.obs_scope}
-
-AGENT B ({offer_b.room_type}):
-  can_do   : {json.dumps(offer_b.can_do, ensure_ascii=False)}
-  obs_scope: {offer_b.obs_scope}
-
-NEGOTIATED PLAN A (post-negotiation):
-{jdump(steps_a)}
-
-NEGOTIATED PLAN B (post-negotiation):
-{jdump(steps_b)}
-
-CONVERGENCE STATUS:
-{conv_str}
-
-HUMAN QUERY ANSWERS:
-{hq_str}
-
-{FINALIZE_FEW_SHOT}
-
-Merge the two plans into a single coherent Joint Plan:
-1. COMPLETENESS   : cover all objectives from both plans.
-2. EXECUTABILITY  : each step within the assigned agent's can_do.
-3. OBSERVABILITY  : agent_A uses ONLY {offer_a.room_type}; agent_B ONLY {offer_b.room_type}.
-4. SEQUENTIAL     : depends_on must reference valid step_ids.
-5. LOAD BALANCE   : both agents finish within 5 minutes of each other.
-6. PASS RESOLVE   : every PASS sender must have a receiver step (depends_on=[PASS step_id]).
-7. Incorporate HUMAN QUERY ANSWERS to resolve any remaining ambiguities.
-8. Fix any remaining convergence issues noted above.
-
-Output rules:
-- step_ids: sequential integers (1, 2, 3, ...), no duplicates
-- time_min: integer in [0, 30], spread evenly
-- Total steps: 6–10
-- Return ONLY valid JSON inside <JSON> tags.
-
-<JSON>
-{{
-  "joint_plan": [
-    {{
-      "step_id": 1, "time_min": 0,
-      "room": "{offer_a.room_type}", "agent_id": "agent_A",
-      "action": "verb + specific object + detail",
-      "preconditions": [], "depends_on": [],
-      "handoff_type": null, "target_agent": null, "notes": ""
-    }}
-  ]
-}}
-</JSON>"""
-
-
-def _parse_joint(
-    raw: str, offer_a: Offer, offer_b: Offer
+def _auto_add_pass_receivers(
+    steps: List[Dict],
+    offer_a: Offer,
+    offer_b: Offer,
 ) -> List[Dict]:
-    data     = extract_json(raw)
-    raw_plan = data.get("joint_plan", [])
-    if not isinstance(raw_plan, list):
-        return []
-
+    """
+    PASS step에 대응하는 receiver step이 없으면 자동으로 추가한다.
+    rule-based로 처리 (LLM 미사용).
+    """
     room_map = {"agent_A": offer_a.room_type, "agent_B": offer_b.room_type}
-    seen_ids: set = set()
-    cleaned: List[Dict] = []
+    pass_steps    = {s["step_id"]: s for s in steps if s.get("handoff_type") == "PASS"}
+    pass_received = {dep for s in steps for dep in s.get("depends_on", []) if dep in pass_steps}
 
-    for i, step in enumerate(raw_plan, start=1):
-        if not isinstance(step, dict):
-            continue
-        action    = str(step.get("action", "")).strip()
-        raw_agent = str(step.get("agent_id", "")).strip()
-        raw_room  = str(step.get("room", "")).strip()
-        if not action or "|" in raw_agent or "|" in raw_room:
-            continue
-        if raw_agent not in VALID_AGENTS:
-            continue
-
-        sid = safe_int(step.get("step_id", i), i)
-        while sid in seen_ids:
-            sid += 1
-        seen_ids.add(sid)
-
-        cleaned.append({
-            "step_id":       sid,
-            "time_min":      max(0, min(30, safe_int(step.get("time_min", 0), 0))),
-            "room":          raw_room,
-            "agent_id":      raw_agent,
-            "action":        action,
-            "preconditions": [str(x).strip() for x in step.get("preconditions", []) if str(x).strip()],
-            "depends_on":    _norm_depends(step.get("depends_on")),
-            "handoff_type":  _norm_handoff(step.get("handoff_type")),
-            "target_agent":  _norm_agent(step.get("target_agent")),
-            "notes":         str(step.get("notes", "")).strip(),
-        })
-
-    # PASS 수신 스텝 자동 보완
-    pass_steps    = {s["step_id"]: s for s in cleaned if s.get("handoff_type") == "PASS"}
-    pass_received = {dep for s in cleaned for dep in s.get("depends_on", []) if dep in pass_steps}
+    additions = []
+    max_id = max((s["step_id"] for s in steps), default=0)
 
     for sid, pass_s in pass_steps.items():
-        if sid not in pass_received and pass_s.get("target_agent") in room_map:
-            target = pass_s["target_agent"]
-            auto = {
-                "step_id":       max((s["step_id"] for s in cleaned), default=0) + 1,
-                "time_min":      min(30, pass_s["time_min"] + 1),
-                "room":          room_map[target],
-                "agent_id":      target,
-                "action":        f"receive and place: {pass_s['action']}",
-                "preconditions": [f"step {sid} completed"],
-                "depends_on":    [sid],
-                "handoff_type":  None,
-                "target_agent":  None,
-                "notes":         "auto-generated PASS receiver",
-            }
-            cleaned.append(auto)
-            print(f"  [AUTO-PASS] step {auto['step_id']} added for {target}")
+        if sid in pass_received:
+            continue
+        target = pass_s.get("target_agent")
+        if not target or target not in room_map:
+            continue
 
-    # step_id 재번호 (time_min 순)
-    sorted_plan = sorted(cleaned, key=lambda x: (x["time_min"], x["step_id"]))
-    old_to_new: Dict[int, int] = {}
-    for new_id, s in enumerate(sorted_plan, start=1):
-        old_to_new[s["step_id"]] = new_id
-    for s in sorted_plan:
-        s["step_id"]    = old_to_new[s["step_id"]]
-        s["depends_on"] = [old_to_new[d] for d in s["depends_on"] if d in old_to_new]
-        s["preconditions"] = [
-            f"step {old_to_new[int(m.group(1))]} completed"
-            if (m := re.match(r"step (\d+) completed", p)) and int(m.group(1)) in old_to_new
-            else p
-            for p in s["preconditions"]
-        ]
+        max_id += 1
+        additions.append({
+            "step_id":       max_id,
+            "time_min":      min(30, pass_s["time_min"] + 1),
+            "room":          room_map[target],
+            "agent_id":      target,
+            "action":        f"receive and place: {pass_s['action']}",
+            "preconditions": [f"step {sid} completed"],
+            "depends_on":    [sid],
+            "handoff_type":  None,
+            "target_agent":  None,
+            "notes":         "auto-added PASS receiver",
+        })
+        print(f"  [AUTO-PASS] step {max_id} added for {target} (receiver of step {sid})")
 
-    return sorted_plan
+    return steps + additions
 
 
 def phase_finalize(
@@ -1361,36 +1217,55 @@ def phase_finalize(
     offer_b:       Offer,
     human_answers: Dict[str, str],
     convergence:   ConvergenceResult,
-    task:          str,
-    img_a:         str,
-    img_b:         str,
     verbose:       str = "full",
 ) -> List[Dict]:
     """
     협상된 두 플랜을 단일 Joint Plan으로 확정한다.
-    수렴 조건 충족 여부와 human query 답변을 반영한다.
+    LLM 호출 없이 rule-based merge만 수행.
+
+    1. 두 플랜 합산
+    2. PASS receiver 자동 보완 (미매칭 PASS step에 한해)
+    3. time_min 순 정렬
+    4. step_id 재번호 (1부터 순차)
+    5. depends_on 재매핑
     """
-    _banner("FINALIZE — JOINT PLAN")
+    _banner("FINALIZE — RULE-BASED JOINT PLAN MERGE")
 
-    prompt = _build_finalize_prompt(
-        steps_a, steps_b, offer_a, offer_b, human_answers, convergence, task
-    )
-    # 리더 역할 없이 agent_A 이미지로 finalize (P2P 구조에서 leader 불필요)
-    MAX_RETRY = 3
-    raw = ""
-    for attempt in range(MAX_RETRY):
-        raw, _ = run_vlm(img_a, prompt)
-        refusal_kw = ["sorry", "can't assist", "cannot assist", "i'm not able", "unable to"]
-        if not any(kw in raw.lower() for kw in refusal_kw):
-            break
-        print(f"  [RETRY {attempt+1}/{MAX_RETRY}] model refused, retrying...")
+    # Human query 답변 요약 출력
+    if human_answers:
+        print("  Human query answers incorporated:")
+        for q, a in human_answers.items():
+            print(f"    Q: {q[:60]}...")
+            print(f"    A: {a}")
 
-    if verbose == "full":
-        _log("RAW JOINT PLAN", raw)
+    # 1. 합산
+    merged = list(steps_a) + list(steps_b)
 
-    joint = _parse_joint(raw, offer_a, offer_b)
+    # 2. PASS receiver 자동 보완
+    merged = _auto_add_pass_receivers(merged, offer_a, offer_b)
+
+    # 3. time_min 순 정렬
+    merged.sort(key=lambda x: (x.get("time_min", 0), x.get("step_id", 0)))
+
+    # 4-5. step_id 재번호 및 depends_on 재매핑
+    old_to_new: Dict[int, int] = {}
+    for new_id, s in enumerate(merged, start=1):
+        old_to_new[s["step_id"]] = new_id
+
+    for s in merged:
+        s["step_id"]    = old_to_new[s["step_id"]]
+        s["depends_on"] = [old_to_new[d] for d in s.get("depends_on", []) if d in old_to_new]
+        # preconditions 텍스트 내 "step N completed" 업데이트
+        new_preconds = []
+        for p in s.get("preconditions", []):
+            m = re.match(r"step (\d+) completed", p)
+            if m and int(m.group(1)) in old_to_new:
+                new_preconds.append(f"step {old_to_new[int(m.group(1))]} completed")
+            else:
+                new_preconds.append(p)
+        s["preconditions"] = new_preconds
 
     if verbose in ("full", "summary"):
-        _log("PARSED JOINT PLAN", jdump(joint))
+        print(f"\n  Merged {len(steps_a)} A-steps + {len(steps_b)} B-steps = {len(merged)} total steps")
 
-    return joint
+    return merged
