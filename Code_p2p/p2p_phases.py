@@ -363,6 +363,99 @@ def _parse_local_plan(
     return LocalPlan(my.agent_id, steps, compute_plan_uncertainty(all_unc), hq_list)
 
 
+def _inject_coordination(
+    plan_a: LocalPlan, plan_b: LocalPlan,
+    offer_a: Offer, offer_b: Offer,
+) -> Tuple[LocalPlan, LocalPlan]:
+    """
+    Phase 2 이후 rule-based coordination 강제 삽입.
+    can_provide <-> need_from_other 매칭으로:
+      1. sender 플랜에 delivery step 삽입
+      2. receiver 플랜의 사용 step에 depends_on + time_min 강제 연결
+    LLM이 coordination을 놓쳐도 코드가 보장한다.
+    """
+    def _inject_one_direction(
+        sender_plan, receiver_plan, sender_offer, receiver_offer,
+        sender_id, receiver_id, step_offset,
+    ):
+        for provide in sender_offer.can_provide:
+            # receiver가 이 item을 필요로 하는지
+            receiver_needs = any(
+                _fuzzy_match_soft(provide, n) for n in receiver_offer.need_from_other
+            )
+            if not receiver_needs:
+                # need_from_other 매칭 실패해도 can_provide가 있으면 강제로 처리
+                # (fuzzy match 실패를 보완: provide와 receiver.can_do 중 snack/food 관련이면 연결)
+                pass
+
+            # sender 플랜에서 이 item과 관련된 prep step 찾기
+            prep_steps = [s for s in sender_plan.steps
+                          if _resource_keywords(provide) & _resource_keywords(s.action)]
+            if not prep_steps:
+                prep_steps = list(sender_plan.steps)
+            if not prep_steps:
+                continue
+
+            last_prep = max(prep_steps, key=lambda s: s.time_min)
+
+            # delivery step 이미 있는지 확인 (중복 방지)
+            already = any(
+                s.agent_id == sender_id
+                and s.time_min > last_prep.time_min
+                and "signal" in s.action.lower()
+                for s in sender_plan.steps
+            )
+            if already:
+                continue
+
+            # sender에 delivery step 삽입
+            all_ids = {s.step_id for s in sender_plan.steps} | {s.step_id for s in receiver_plan.steps}
+            new_sid = max(all_ids, default=step_offset) + 1
+            while new_sid in all_ids:
+                new_sid += 1
+
+            delivery_time = min(30, last_prep.time_min + 5)
+            delivery_step = PlanStep(
+                step_id       = new_sid,
+                time_min      = delivery_time,
+                room          = sender_offer.room_type,
+                agent_id      = sender_id,
+                action        = f"signal {provide} ready for {receiver_id}",
+                preconditions = [f"step {last_prep.step_id} completed"],
+                depends_on    = [last_prep.step_id],
+                uncertainty   = 0.1,
+                notes         = f"[COORD] {provide} ready",
+            )
+            sender_plan.steps.append(delivery_step)
+            sender_plan.steps.sort(key=lambda s: (s.time_min, s.step_id))
+            print(f"  [COORD] {sender_id}: delivery step{new_sid} added (T={delivery_time}m) for '{provide}'")
+
+            # receiver 플랜에서 연결할 step 찾기
+            # (a) item 키워드 겹치거나 (b) need_from_other와 action 매칭
+            provide_kw = _resource_keywords(provide)
+            for rs in receiver_plan.steps:
+                act_kw     = _resource_keywords(rs.action)
+                kw_overlap = provide_kw & act_kw
+                need_match = any(_fuzzy_match_soft(rs.action, n) for n in receiver_offer.need_from_other)
+                if not kw_overlap and not need_match:
+                    continue
+                if new_sid in rs.depends_on:
+                    continue
+                rs.depends_on = sorted(set(rs.depends_on + [new_sid]))
+                if rs.time_min <= delivery_time:
+                    rs.time_min = delivery_time + 1
+                print(f"  [COORD] {receiver_id} step{rs.step_id} '{rs.action}' "
+                      f"now depends_on={rs.depends_on}, T={rs.time_min}m")
+
+        return sender_plan, receiver_plan
+
+    plan_a, plan_b = _inject_one_direction(
+        plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B", 0)
+    plan_b, plan_a = _inject_one_direction(
+        plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A", AGENT_B_STEP_OFFSET)
+    return plan_a, plan_b
+
+
 def phase2_local_plan(
     offer_a: Offer, offer_b: Offer,
     img_a: str, img_b: str, task: str,
@@ -384,9 +477,14 @@ def phase2_local_plan(
     plan_a = _parse_local_plan(raw_a, logp_a, offer_a, step_offset=0)
     plan_b = _parse_local_plan(raw_b, logp_b, offer_b, step_offset=AGENT_B_STEP_OFFSET)
 
+    # Rule-based coordination 강제 삽입
+    if use_offer:
+        _banner("PHASE 2b — COORDINATION INJECTION (rule-based)")
+        plan_a, plan_b = _inject_coordination(plan_a, plan_b, offer_a, offer_b)
+
     if verbose in ("full", "summary"):
-        _log("PLAN A", jdump(local_plan_to_dict(plan_a)))
-        _log("PLAN B", jdump(local_plan_to_dict(plan_b)))
+        _log("PLAN A (after coordination)", jdump(local_plan_to_dict(plan_a)))
+        _log("PLAN B (after coordination)", jdump(local_plan_to_dict(plan_b)))
 
     print(f"\n  A: steps={len(plan_a.steps)} U={plan_a.U_plan:.3f}")
     print(f"  B: steps={len(plan_b.steps)} U={plan_b.U_plan:.3f}")
