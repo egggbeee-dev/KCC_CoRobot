@@ -402,7 +402,7 @@ def _inject_coordination(
             already = any(
                 s.agent_id == sender_id
                 and s.time_min > last_prep.time_min
-                and "signal" in s.action.lower()
+                and ("notify" in s.action.lower() or "[COORD]" in s.notes)
                 for s in sender_plan.steps
             )
             if already:
@@ -420,7 +420,7 @@ def _inject_coordination(
                 time_min      = delivery_time,
                 room          = sender_offer.room_type,
                 agent_id      = sender_id,
-                action        = f"signal {provide} ready for {receiver_id}",
+                action        = f"notify {receiver_id}: {provide} is ready",
                 preconditions = [f"step {last_prep.step_id} completed"],
                 depends_on    = [last_prep.step_id],
                 uncertainty   = 0.1,
@@ -430,29 +430,50 @@ def _inject_coordination(
             sender_plan.steps.sort(key=lambda s: (s.time_min, s.step_id))
             print(f"  [COORD] {sender_id}: delivery step{new_sid} added (T={delivery_time}m) for '{provide}'")
 
-            # receiver 플랜에서 연결할 step 찾기
-            # (a) item 키워드 겹치거나 (b) need_from_other와 action 매칭
+            # receiver 플랜에서 연결할 step 찾기 (강화된 매칭)
+            # (a) item 키워드 겹침  (b) need_from_other 매칭  (c) can_do 매칭
             provide_kw = _resource_keywords(provide)
+            # can_do 중 item과 관련된 액션이 있으면 해당 키워드도 포함
+            related_can_do_kw: Set[str] = set()
+            for cd in receiver_offer.can_do:
+                if len(provide_kw & _resource_keywords(cd)) >= 1:
+                    related_can_do_kw |= _resource_keywords(cd)
+            extended_kw = provide_kw | related_can_do_kw
+
             for rs in receiver_plan.steps:
+                # [COORD] signal step은 건너뜀
+                if "[COORD]" in rs.notes or rs.action.lower().startswith(("signal", "notify")):
+                    continue
                 act_kw     = _resource_keywords(rs.action)
-                kw_overlap = provide_kw & act_kw
+                kw_overlap = extended_kw & act_kw
                 need_match = any(_fuzzy_match_soft(rs.action, n) for n in receiver_offer.need_from_other)
-                if not kw_overlap and not need_match:
+                can_do_match = any(_fuzzy_match_soft(rs.action, cd) for cd in receiver_offer.can_do
+                                   if len(provide_kw & _resource_keywords(cd)) >= 1)
+                if not kw_overlap and not need_match and not can_do_match:
                     continue
                 if new_sid in rs.depends_on:
                     continue
                 rs.depends_on = sorted(set(rs.depends_on + [new_sid]))
                 if rs.time_min <= delivery_time:
                     rs.time_min = delivery_time + 1
-                print(f"  [COORD] {receiver_id} step{rs.step_id} '{rs.action}' "
-                      f"now depends_on={rs.depends_on}, T={rs.time_min}m")
+                print(f"  [COORD] {receiver_id} step{rs.step_id} \"{rs.action[:40]}\" "
+                      f"→ depends_on=[...,{new_sid}], T={rs.time_min}m")
 
         return sender_plan, receiver_plan
 
     plan_a, plan_b = _inject_one_direction(
         plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B", 0)
-    plan_b, plan_a = _inject_one_direction(
-        plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A", AGENT_B_STEP_OFFSET)
+    # B→A: receiver의 need_from_other가 "confirmation"류면 inject 생략
+    # (물리적 아이템 이동이 아닌 정보성 확인은 notify step 불필요)
+    a_needs_physical = any(
+        not any(w in n.lower() for w in ("confirm", "confirmation", "check", "ready", "clear"))
+        for n in offer_a.need_from_other
+    )
+    if a_needs_physical:
+        plan_b, plan_a = _inject_one_direction(
+            plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A", AGENT_B_STEP_OFFSET)
+    else:
+        print(f"  [COORD] B→A inject skipped: A only needs confirmation, not physical items")
     return plan_a, plan_b
 
 
@@ -593,8 +614,16 @@ def detect_conflicts(
                 ))
 
     # ── 3. REDUNDANCY (inter) ─────────────────────────────────────────────────
+    # [COORD] signal step은 redundancy 탐지에서 제외
+    def _is_coord_step(s) -> bool:
+        return "[COORD]" in s.notes or s.action.lower().startswith(("signal", "notify"))
+
     for sa in steps_a:
+        if _is_coord_step(sa):
+            continue
         for sb in steps_b:
+            if _is_coord_step(sb):
+                continue
             if _fuzzy_match(sa.action, sb.action, min_overlap=3):
                 conflicts.append(ConflictEntry(
                     conflict_type = ConflictType.REDUNDANCY,
@@ -606,8 +635,12 @@ def detect_conflicts(
     # ── 4. REDUNDANCY (intra) ─────────────────────────────────────────────────
     for agent_steps in [steps_a, steps_b]:
         for i in range(len(agent_steps)):
+            if _is_coord_step(agent_steps[i]):
+                continue
             for j in range(i + 1, len(agent_steps)):
                 si, sj = agent_steps[i], agent_steps[j]
+                if _is_coord_step(sj):
+                    continue
                 if _fuzzy_match(si.action, sj.action, min_overlap=3):
                     conflicts.append(ConflictEntry(
                         conflict_type = ConflictType.REDUNDANCY,
@@ -630,7 +663,9 @@ def detect_conflicts(
     # ── 6. OBSERVABILITY ─────────────────────────────────────────────────────
     # can_do 범위 밖 액션: action keyword가 can_do 전체 키워드 집합과 교집합 없음
     for step, offer in all_steps_with_offer:
-        if step.action.lower().startswith(("receive", "confirm")):
+        if step.action.lower().startswith(("receive", "confirm", "signal", "notify")):
+            continue
+        if "[COORD]" in step.notes:
             continue
         can_do_kw = set()
         for cd in offer.can_do:
