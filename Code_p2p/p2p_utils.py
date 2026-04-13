@@ -1,14 +1,12 @@
-# ══════════════════════════════════════════════════════════════════════════════
 # utils.py
 # 공통 유틸리티: 타입 변환, JSON 추출, 퍼지 매칭, 불확실성 계산, 로깅
-# ══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
 
 import json
 import math
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from p2p_config import FUZZY_STOPWORDS, VALID_AGENTS, VALID_HANDOFFS, VALID_REASONS
 
@@ -194,3 +192,21 @@ def compute_plan_uncertainty(step_uncertainties: List[float]) -> float:
         if step_uncertainties
         else 0.0
     )
+
+
+# ── 출력 헬퍼 (verifier 제거 후 여기로 이동) ──────────────────────────────────
+
+def format_joint_plan(plan: List[Dict]) -> str:
+    """Joint plan을 읽기 좋은 형태로 출력."""
+    if not plan:
+        return "  (empty)"
+    lines = []
+    for s in plan:
+        dep  = f" deps={s['depends_on']}" if s.get("depends_on") else ""
+        hoff = f" [{s['handoff_type']}→{s['target_agent']}]" if s.get("handoff_type") else ""
+        note = f" ({s['notes']})" if s.get("notes") else ""
+        lines.append(
+            f"  {s['step_id']:>2}. [T={s['time_min']:>2}m] [{s['room']:<12}] [{s['agent_id']}]  "
+            f"{s['action']}{hoff}{dep}{note}"
+        )
+    return "\n".join(lines)
