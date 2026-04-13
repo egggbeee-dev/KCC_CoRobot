@@ -149,12 +149,12 @@
       "Drying and disposal instructions"
     ],
     "ground_truth": {
-      "search": [
+      "kitchen": [
         "Locate the kitchen sink and determine accessibility",
         "Check for alternatives in the bedroom (hand wash, wet wipes, etc.)",
         "Guide to the nearest available washing location"
       ],
-      "procedure": [
+      "bedroom": [
         "Turn on the faucet and check the water temperature",
         "Locate soap and provide usage instructions",
         "If soap is unavailable, suggest alternatives (hand wash, wet wipes)",
