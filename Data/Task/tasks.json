@@ -36,9 +36,8 @@
       "kitchen": [
         "Clear workspace on the counter (remove unnecessary items)",
         "Set up a food/drink station on a designated side of the table",
-        "Arrange cups, plates, forks, and napkins",
-        "Prepare bottled or canned drinks on the counter or in an ice bucket",
-        "Empty the trash bin and prepare extra bags",
+        "Arrange cups, plates, forks",
+        "Prepare bottled or drinks on the counter or in an ice bucket",
         "Complete dishwashing and organize the sink"
       ],
       "living_room": [
@@ -66,7 +65,6 @@
         "Boil water using an electric kettle or a pot",
         "Check ingredients or cook easy-to-digest food (porridge, toast, soup)",
         "Get mugs, bowls, and spoons ready",
-        "Locate medicines (digestives, cold medicine) in kitchen drawers",
         "Place food on a tray to prepare for movement to the bedroom"
       ],
       "bedroom": [
@@ -74,9 +72,7 @@
         "Dim the lights or switch to a night light",
         "Close curtains or blinds to block light",
         "Place a glass of water on the side table",
-        "Place medicine and a thermometer within reach on the side table",
         "Connect the phone to a charger and place it nearby",
-        "Take out an extra blanket and place it by the bed"
       ]
     }
   },
@@ -102,8 +98,8 @@
       "kitchen": [
         "Check the refrigerator for breakfast, lunch, and dinner ingredients",
         "Organize snacks and drinks for easy access",
-        "Prepare coffee or tea (set out tumblers and mugs)",
-        "Fill a water bottle and place it near the desk in advance",
+        "Prepare drinks (set out tumblers and mugs)",
+        "Fill a water in cups and place it near the desk in advance",
         "Organize the sink to remove distractions"
       ]
     }
@@ -123,7 +119,7 @@
         "Decide on a simple meal (egg fried rice, ramen, etc.)",
         "Take out cooking tools like pots and frying pans",
         "Start and complete cooking",
-        "Set out bowls, spoons, and chopsticks",
+        "Set out bowls, spoons",
         "Place food on the kitchen counter or table"
       ],
       "bedroom": [
@@ -211,8 +207,7 @@
       "bedroom": [
         "Quickly tidy the blankets and pillows",
         "Gather items from the floor and clear them",
-        "Put personal items (clothes, underwear, etc.) into drawers/closets",
-        "Empty or hide the trash bin"
+        "Put personal items (books,laptop, etc.) on table",
       ]
     }
   },
@@ -230,9 +225,7 @@
         "Turn off main lights and switch to indirect or night lights",
         "Close curtains or blinds to block external light",
         "Tidy blankets and pillows for a comfortable setup",
-        "Place an extra blanket on the bed",
         "Identify and turn off noise sources (TV, alarms, etc.)",
-        "Recommend silent or 'Do Not Disturb' mode for phones"
       ],
       "living_room": [
         "Arrange sofa cushions for comfortable reclining",
@@ -240,7 +233,7 @@
         "Dim or turn off the main lights",
         "Turn on indirect lights or floor lamps",
         "Turn off the TV or set it to quiet content",
-        "Place cushions and pillows near the sofa armrests"
+        "Place cushions near the number of seats (sofa, chairs, etc.)"
       ]
     }
   },
@@ -303,21 +296,20 @@
     "subtasks": [
       "Systematic furniture and pocket search in bedroom",
       "Hidden area and charger check in bedroom",
-      "Sofa and surface search in living room",
+      "number of seats (sofa, chairs, etc.) and surface search in living room",
       "Retrieval and charging setup"
     ],
     "ground_truth": {
       "bedroom": [
         "Check on top of or inside side table drawers",
         "Check between the mattress and under the bed",
-        "Check around the charger",
-        "Check clothing pockets and closet shelves",
+        "Check around the charger"
         "Check on the desk and inside drawers",
         "If found, place in designated spot and connect charger if low"
       ],
       "living_room": [
         "Check between sofa cushions",
-        "Check the floor under the sofa",
+        "Check the floor under the number of seats (sofa, chairs, etc.)",
         "Check on and under tables",
         "Check around the TV and on shelves",
         "If found, place in designated spot and connect charger if low"
@@ -344,7 +336,7 @@
       ],
       "living_room": [
         "Evaluate table, lighting, and distractions like the TV",
-        "Turn off the TV and speakers",
+        "Turn off the TV or speakers",
         "Clear table surface of distractions",
         "Minimize leaving the seat by placing water and snacks nearby"
       ]
@@ -363,14 +355,13 @@
       "living_room": [
         "Identify the type of contamination (dust, stains, food, etc.) on the remote",
         "Check for dirt in the gaps between buttons",
-        "Check for wet wipes or dry cloths",
         "Wipe the entire surface of the remote",
         "Avoid excessive moisture near buttons",
         "Place it next to the TV or in a remote holder after drying"
       ],
       "bedroom": [
         "Search for cleaning materials like alcohol swabs or cotton swabs for gaps",
-        "Locate dry cloths if not found in living room"
+        "Locate dirt things if not found in living room"
       ]
     }
   },
@@ -419,7 +410,6 @@
       ],
       "bedroom": [
         "Check the contents of the trash bin",
-        "Check for dirty laundry or piles of clothes",
         "Check for traces of food or drinks brought in",
         "Check odors on blankets and pillows",
         "Remove the source (disposal, laundry) and ventilate"
@@ -462,16 +452,14 @@
     "ground_truth": {
       "living_room": [
         "Organize miscellaneous items on the table",
-        "Tidy cushions and the sofa",
+        "Tidy cushions or the number of seats (sofa, chairs, etc.)",
         "Clear items from the floor",
         "Set the lighting to be bright",
         "Prepare and set out drinks and snacks"
       ],
       "bedroom": [
-        "Tidy blankets and pillows",
+        "Tidy blankets or pillows",
         "Put personal items into drawers or closets",
-        "Clear clothes and items from the floor",
-        "Empty the trash bin",
         "Remove odors through air fresheners or ventilation"
       ],
       "priority": [
@@ -522,7 +510,6 @@
       "bathroom": [
         "Check for water flow in the sink faucet",
         "Check the shower faucet",
-        "Check the bathtub faucet",
         "Check for continuous filling sounds in the toilet tank",
         "Check for standing water in the drain",
         "Turn off any running faucets completely"
@@ -530,7 +517,6 @@
       "bedroom": [
         "Check for humidifier overflow or over-operation",
         "Check for spilled water bottles or tanks",
-        "Check for air conditioner drain water",
         "Identify and report the cause of running water",
         "Wipe up spilled water to prevent slipping"
       ]
@@ -549,14 +535,13 @@
       "bedroom": [
         "Clear small objects (coins, buttons, batteries) from floors/tables",
         "Move sharp objects (scissors, knives, pins) to high places",
-        "Move medicines/vitamins to locked drawers or high shelves",
         "Check for heavy furniture tip-over risks and confirm wall anchors",
         "Organize or hide exposed floor cables",
         "Check for outlet covers and recommend installation"
       ],
       "bathroom": [
         "Place non-slip mats on slippery tile floors",
-        "Move detergents, shampoos, and chemicals from low to high storage",
+        "Move detergents and chemicals from low to high storage",
         "Store sharp objects like razors/scissors in locked storage",
         "Check for standing water in the tub and ensure drainage",
         "Close the toilet lid",
@@ -575,21 +560,18 @@
     ],
     "ground_truth": {
       "bedroom": [
-        "Tidy blankets and pillows for a comfortable setup",
+        "Tidy blankets or pillows for a comfortable setup",
         "Prepare an extra blanket on the bed",
         "Dim the lights (optimized for sleep/rest)",
         "Close curtains (block light and noise)",
-        "Place a glass of water and medicine on the side table",
-        "Place a thermometer within reach",
-        "Connect phone to charger (for emergency contact)",
-        "Move the trash bin bedside (in case of vomiting)"
+        "Place a glass of water or medicine on the side table",
+        "Connect phone to charger (for emergency contact)"
       ],
       "bathroom": [
         "Hang clean towels (for cold compresses if feverish)",
         "Organize the area around the sink (for ease of use)",
         "Check and refill toilet paper",
-        "Check accessibility of tooth-brushing tools after vomiting",
-        "Check non-slip mats (fall risk during physical weakness)"
+        "Check accessibility of tooth-brushing tools like cups after vomiting",
       ]
     }
   },
@@ -606,10 +588,9 @@
       "bedroom": [
         "Remove all unnecessary items from the desk",
         "Set lighting to be bright (recommend stand light to minimize eye strain)",
-        "Flip the phone or set to 'Do Not Disturb' mode",
         "Turn off the TV and unnecessary electronics",
         "Place textbooks, writing tools, and laptop on the desk",
-        "Place water and snacks (energy bars, nuts, etc.) on the desk in advance",
+        "Place water on the desk in advance",
         "Adjust the chair (suitable for long hours of sitting)",
         "Ventilate the room (recommend 10-minute ventilation for focus)"
       ],
