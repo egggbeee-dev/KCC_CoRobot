@@ -32,22 +32,20 @@ def run_ablation(
     from p2p_main import run
 
     configs = [
-        # (label,              use_offer, use_handoff, use_negotiation, use_hq)
-        ("Full (Ours)",        True,  True,  True,  True),
-        ("w/o Negotiation",    True,  True,  False, True),
-        ("w/o Human Query",    True,  True,  True,  False),
-        ("w/o Handoff",        True,  False, True,  True),
-        ("w/o Offer",          False, True,  True,  True),
+        # (label,              use_offer, use_negotiation, use_hq)
+        ("Full (Ours)",        True,  True,  True),
+        ("w/o Negotiation",    True,  False, True),
+        ("w/o Human Query",    True,  True,  False),
+        ("w/o Offer",          False, True,  True),
     ]
 
     results = []
-    for label, use_offer, use_handoff, use_neg, use_hq in configs:
+    for label, use_offer, use_neg, use_hq in configs:
         result = run(
             task_id         = task_id,
             img_a           = img_a,
             img_b           = img_b,
             use_offer       = use_offer,
-            use_handoff     = use_handoff,
             use_negotiation = use_neg,
             use_human_query = use_hq,
             label           = label,
