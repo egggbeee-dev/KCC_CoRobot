@@ -233,10 +233,19 @@ def phase1_offer(
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PHASE 2: OFFER-CONDITIONED LOCAL PLANNING
+#
+# Option 3 구조:
+#   Phase 2a: LLM → 액션만 생성 (handoff_type 필드 없음)
+#   Phase 2b: Rule → offer 매칭 기반으로 PASS/INFORM step 자동 삽입
+#
+# LLM의 역할 = "무엇을 할 것인가 (what)"
+# Rule의 역할 = "어떻게 전달할 것인가 (how to coordinate)"
 # ──────────────────────────────────────────────────────────────────────────────
 
-PHASE2_FEW_SHOT = """
-EXAMPLE - kitchen agent preparing snacks for delivery:
+# ── Phase 2a: 액션만 생성하는 프롬프트 ────────────────────────────────────────
+
+PHASE2A_FEW_SHOT = """
+EXAMPLE - kitchen agent preparing snacks:
 <JSON>
 {
   "plan_steps": [
@@ -244,80 +253,54 @@ EXAMPLE - kitchen agent preparing snacks for delivery:
       "step_id": 1, "time_min": 0,
       "action": "place apple and orange from island onto serving tray",
       "preconditions": [], "depends_on": [],
-      "handoff_type": null, "target_agent": null,
       "uncertainty": 0.1, "notes": ""
     },
     {
       "step_id": 2, "time_min": 5,
       "action": "arrange bread from basket onto plate",
       "preconditions": [], "depends_on": [],
-      "handoff_type": null, "target_agent": null,
       "uncertainty": 0.1, "notes": ""
     },
     {
       "step_id": 3, "time_min": 10,
-      "action": "carry snack tray to kitchen doorway for agent_B pickup",
-      "preconditions": ["snacks arranged on tray"], "depends_on": [1, 2],
-      "handoff_type": "PASS", "target_agent": "agent_B",
-      "uncertainty": 0.15, "notes": "snack tray ready at kitchen doorway"
+      "action": "wipe counter surface with cloth",
+      "preconditions": [], "depends_on": [],
+      "uncertainty": 0.1, "notes": ""
     },
     {
       "step_id": 4, "time_min": 15,
-      "action": "wipe counter surface with cloth",
+      "action": "organize items on kitchen shelf",
       "preconditions": [], "depends_on": [],
-      "handoff_type": null, "target_agent": null,
-      "uncertainty": 0.1, "notes": ""
+      "uncertainty": 0.15, "notes": ""
     }
   ]
 }
 </JSON>
 
-HANDOFF RULES:
-
-PASS - physical item transfer between rooms:
-  CORRECT: YOU prepare item -> carry to boundary -> PASS to other agent
-  WRONG: receiver declaring PASS (you are RECEIVER, not sender)
-  WRONG: PASS without a preparation step before it
-
-INFORM - status/completion notification (no physical item):
-  CORRECT: Use INFORM only for status NOT already conveyed by a PASS step
-  WRONG: adding INFORM immediately after PASS for the same item
-         (PASS already implies the transfer happened - do NOT double-notify)
-
-TIMING CONSTRAINT (CRITICAL):
-  If you RECEIVE an item via PASS from the other agent:
-  - Add a receive step with depends_on=[PASS_step_id]
-  - The receive step's time_min MUST be AFTER the PASS step's time_min
-  - Do NOT use or place the received item BEFORE the receive step
-
-UNIQUENESS CONSTRAINT:
-  Do NOT include the same action twice in your plan.
-  Each step must be meaningfully different from all other steps.
-
-CRITICAL:
-- uncertainty: 0.0=certain, 1.0=uncertain. Confident actions -> LOW uncertainty (0.1-0.2).
-- Steps must be in YOUR OWN ROOM ONLY.
+RULES:
+- Generate ONLY actions you perform in YOUR OWN ROOM.
+- Use ONLY objects directly visible in your image.
+- Each step must be distinct. Do NOT repeat the same action.
+- Do NOT include handoff, carry, or delivery steps — those are handled automatically.
+- uncertainty: 0.0=certain, 1.0=uncertain.
 """.strip()
 
 
-def build_phase2_prompt(
-    my: Offer, other: Offer, task: str, use_offer: bool = True
-) -> str:
-    matched_needs    = [n for n in my.need_from_other if any(_fuzzy_match_soft(n, p) for p in other.can_provide)]
-    matched_provides = [p for p in my.can_provide if any(_fuzzy_match_soft(p, n) for n in other.need_from_other)]
-
+def build_phase2a_prompt(my: Offer, task: str, use_offer: bool = True) -> str:
+    """
+    Phase 2a: LLM에게 handoff 없이 순수 액션만 생성하게 한다.
+    handoff_type 필드 자체를 프롬프트에서 제거.
+    """
     if use_offer:
         context = f"""YOUR OFFER:
-{jdump(offer_to_dict(my))}
-
-OTHER AGENT'S OFFER ({other.room_type}):
-{jdump(offer_to_dict(other))}
-
-MATCHED HANDOFF OPPORTUNITIES:
-- Items YOU can PASS to other agent (you are SENDER): {json.dumps(matched_provides, ensure_ascii=False)}
-- Items other agent will PASS to YOU (you are RECEIVER): {json.dumps(matched_needs, ensure_ascii=False)}"""
+- room_type: {my.room_type}
+- observation: {my.observation}
+- obs_scope: {my.obs_scope}
+- can_do: {json.dumps(my.can_do, ensure_ascii=False)}
+- can_provide (items you will prepare for the other agent): {json.dumps(my.can_provide, ensure_ascii=False)}
+- need_from_other: {json.dumps(my.need_from_other, ensure_ascii=False)}"""
     else:
-        context = f"YOUR ROOM: {my.room_type}\nOTHER AGENT'S ROOM: {other.room_type}"
+        context = f"YOUR ROOM: {my.room_type}"
 
     return f"""You are the {my.room_type} agent ({my.agent_id}).
 
@@ -325,21 +308,13 @@ Global task: "{task}"
 
 {context}
 
-{PHASE2_FEW_SHOT}
+{PHASE2A_FEW_SHOT}
 
-Generate your LOCAL PLAN independently:
-1. OBSERVABILITY: steps ONLY for your room ({my.room_type}). Use only objects visible in your image.
-2. EXECUTABILITY: every action must be physically possible in your room.
-3. Generate 4-6 steps spread over 0-25 minutes.
-4. UNIQUENESS: every step must be distinct. Do NOT repeat the same action.
-5. HANDOFF - two types only:
-   - PASS: ONLY if YOU are SENDING a physical item to the other agent.
-   - INFORM: ONLY for status NOT already covered by a PASS step.
-     Do NOT add INFORM right after PASS for the same item.
-6. RECEIVING: If you receive an item via PASS, add a receive step with
-   depends_on=[PASS_step_id] and time_min STRICTLY AFTER the PASS step.
-   Do NOT use the received item before the receive step.
-7. Return ONLY valid JSON inside <JSON> tags.
+Generate your LOCAL ACTION PLAN for YOUR ROOM ONLY.
+Focus on WHAT to do — preparation, arrangement, cleaning, organizing.
+Do NOT include delivery, carry-to-boundary, or handoff steps.
+Generate 3-5 steps spread over 0-20 minutes.
+Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
@@ -348,7 +323,6 @@ Generate your LOCAL PLAN independently:
       "step_id": 1, "time_min": 0,
       "action": "verb + specific visible object + detail",
       "preconditions": [], "depends_on": [],
-      "handoff_type": null, "target_agent": null,
       "uncertainty": 0.1, "notes": ""
     }}
   ]
@@ -358,23 +332,22 @@ Generate your LOCAL PLAN independently:
 
 def _parse_local_plan(
     raw: str, log_probs: List[float], my: Offer,
-    use_handoff: bool = True, step_offset: int = 0,
+    step_offset: int = 0,
 ) -> LocalPlan:
     """
-    step_offset: Agent B의 step_id를 오프셋해서 A와 충돌 방지
-                 agent_A -> 0, agent_B -> AGENT_B_STEP_OFFSET
+    Phase 2a 출력 파싱. handoff_type 필드를 읽지 않음.
+    step_offset: Agent B step_id 충돌 방지 (A=0, B=AGENT_B_STEP_OFFSET)
     """
     data      = extract_json(raw)
     raw_steps = data.get("plan_steps", [])
     if not isinstance(raw_steps, list):
         raw_steps = []
 
-    token_unc = compute_token_uncertainty(log_probs)
+    token_unc     = compute_token_uncertainty(log_probs)
     steps:        List[PlanStep] = []
     hq_list:      List[HQEntry]  = []
-    handoffs:     List[Handoff]  = []
     seen_ids:     set = set()
-    seen_actions: set = set()  # FIX: 같은 에이전트 내 중복 액션 필터링
+    seen_actions: set = set()
 
     for i, item in enumerate(raw_steps, start=1):
         if not isinstance(item, dict):
@@ -383,10 +356,10 @@ def _parse_local_plan(
         if not action:
             continue
 
-        # FIX: 파싱 단계에서 중복 액션 제거 (keyword 기준)
+        # 중복 액션 필터링
         action_key = frozenset(_resource_keywords(action))
         if action_key and action_key in seen_actions:
-            print(f"  [DEDUP] Skipping duplicate action: '{action}'")
+            print(f"  [DEDUP] Skipping duplicate: '{action}'")
             continue
         seen_actions.add(action_key)
 
@@ -402,27 +375,22 @@ def _parse_local_plan(
             default=0.7
         )
         step_unc = clamp01(
-            json_unc         * 0.5
-            + token_unc      * 0.2
-            + (1 - action_conf) * 0.3
+            json_unc * 0.5 + token_unc * 0.2 + (1 - action_conf) * 0.3
         )
 
-        handoff_type = _norm_handoff(item.get("handoff_type")) if use_handoff else None
-        target       = _norm_agent(item.get("target_agent"))   if use_handoff else None
-
         raw_deps = _norm_depends(item.get("depends_on"))
-        deps = [d + step_offset for d in raw_deps]
+        deps     = [d + step_offset for d in raw_deps]
 
         step = PlanStep(
             step_id       = sid,
-            time_min      = max(0, min(30, safe_int(item.get("time_min", 0), 0))),
+            time_min      = max(0, min(25, safe_int(item.get("time_min", 0), 0))),
             room          = my.room_type,
             agent_id      = my.agent_id,
             action        = action,
             preconditions = [str(x).strip() for x in item.get("preconditions", []) if str(x).strip()],
             depends_on    = deps,
-            handoff_type  = handoff_type,
-            target_agent  = target,
+            handoff_type  = None,   # Phase 2a에서는 항상 None
+            target_agent  = None,
             uncertainty   = step_unc,
             notes         = str(item.get("notes", "")).strip(),
         )
@@ -430,13 +398,84 @@ def _parse_local_plan(
 
         if step_unc >= UNCERTAINTY_THRESH:
             hq_list.append(HQEntry(sid, f"Is '{action}' feasible?", step_unc))
-        if handoff_type:
-            payload = step.notes if handoff_type == "INFORM" else ""
-            handoffs.append(Handoff(sid, action, handoff_type, target, payload))
 
     steps.sort(key=lambda s: (s.time_min, s.step_id))
     all_unc = [s.uncertainty for s in steps] if steps else [token_unc]
-    return LocalPlan(my.agent_id, steps, compute_plan_uncertainty(all_unc), hq_list, handoffs)
+    # handoffs는 Phase 2b에서 채움
+    return LocalPlan(my.agent_id, steps, compute_plan_uncertainty(all_unc), hq_list, handoffs=[])
+
+
+# ── Phase 2b: Rule-based handoff 삽입 ─────────────────────────────────────────
+
+def _build_phase2b_handoffs(
+    plan: LocalPlan,
+    my_offer: Offer,
+    other_offer: Offer,
+) -> LocalPlan:
+    """
+    Phase 2b: offer 매칭으로 PASS step을 자동 생성하고 플랜에 삽입.
+
+    로직:
+    1. my_offer.can_provide 중 other_offer.need_from_other와 매칭되는 항목 탐색
+    2. 매칭된 항목과 관련된 준비 스텝(preparation step)을 찾아 그 뒤에 PASS 삽입
+    3. can_provide 매칭이 없으면 PASS 없음 (handoff 불필요한 에이전트)
+    """
+    other_agent = "agent_B" if my_offer.agent_id == "agent_A" else "agent_A"
+    max_sid     = max((s.step_id for s in plan.steps), default=0)
+    added_pass  = False
+
+    for provide in my_offer.can_provide:
+        # 상대방이 필요로 하는지 확인
+        matched_need = next(
+            (n for n in other_offer.need_from_other if _fuzzy_match_soft(provide, n)),
+            None,
+        )
+        if not matched_need:
+            continue
+
+        # provide 항목과 관련된 준비 스텝 찾기 (fuzzy match)
+        prep_candidates = [
+            s for s in plan.steps
+            if _fuzzy_match_soft(provide, s.action) or
+               any(_fuzzy_match_soft(kw, s.action) for kw in _resource_keywords(provide))
+        ]
+
+        if prep_candidates:
+            # 관련 스텝 중 가장 늦은 것 기준
+            last_prep = max(prep_candidates, key=lambda s: s.time_min)
+            dep_ids   = [last_prep.step_id]
+        else:
+            # 관련 스텝 못 찾으면 전체 준비 스텝의 마지막 기준
+            if not plan.steps:
+                continue
+            last_prep = max(plan.steps, key=lambda s: s.time_min)
+            dep_ids   = [last_prep.step_id]
+
+        max_sid += 1
+        pass_time = min(30, last_prep.time_min + 5)
+
+        pass_step = PlanStep(
+            step_id       = max_sid,
+            time_min      = pass_time,
+            room          = my_offer.room_type,
+            agent_id      = my_offer.agent_id,
+            action        = f"carry {provide} to room boundary for {other_agent} pickup",
+            preconditions = [f"step {last_prep.step_id} completed"],
+            depends_on    = dep_ids,
+            handoff_type  = "PASS",
+            target_agent  = other_agent,
+            uncertainty   = 0.15,
+            notes         = f"auto-generated PASS: {provide} -> {other_agent}",
+        )
+        plan.steps.append(pass_step)
+        plan.handoffs.append(
+            Handoff(max_sid, pass_step.action, "PASS", other_agent, "")
+        )
+        added_pass = True
+        print(f"  [PHASE2B] PASS inserted: step{max_sid} T={pass_time}m | '{provide}' -> {other_agent}")
+
+    plan.steps.sort(key=lambda s: (s.time_min, s.step_id))
+    return plan
 
 
 def phase2_local_plan(
@@ -445,23 +484,39 @@ def phase2_local_plan(
     use_offer: bool = True, use_handoff: bool = True,
     verbose: str = "full",
 ) -> Tuple[LocalPlan, LocalPlan]:
+    """
+    Phase 2a: LLM이 액션만 생성
+    Phase 2b: Rule이 PASS step 삽입 (use_handoff=True일 때만)
+    """
     _banner("PHASE 2 - INDEPENDENT LOCAL PLANNING")
-    prompt_a = build_phase2_prompt(offer_a, offer_b, task, use_offer)
-    prompt_b = build_phase2_prompt(offer_b, offer_a, task, use_offer)
+    _banner("PHASE 2a - ACTION GENERATION (LLM)")
+
+    prompt_a = build_phase2a_prompt(offer_a, task, use_offer)
+    prompt_b = build_phase2a_prompt(offer_b, task, use_offer)
 
     raw_a, logp_a = run_vlm(img_a, prompt_a, return_logprobs=True)
     raw_b, logp_b = run_vlm(img_b, prompt_b, return_logprobs=True)
 
     if verbose == "full":
-        _log("AGENT A RAW LOCAL PLAN", raw_a)
-        _log("AGENT B RAW LOCAL PLAN", raw_b)
+        _log("AGENT A RAW PLAN (2a)", raw_a)
+        _log("AGENT B RAW PLAN (2a)", raw_b)
 
-    plan_a = _parse_local_plan(raw_a, logp_a, offer_a, use_handoff, step_offset=0)
-    plan_b = _parse_local_plan(raw_b, logp_b, offer_b, use_handoff, step_offset=AGENT_B_STEP_OFFSET)
+    plan_a = _parse_local_plan(raw_a, logp_a, offer_a, step_offset=0)
+    plan_b = _parse_local_plan(raw_b, logp_b, offer_b, step_offset=AGENT_B_STEP_OFFSET)
 
     if verbose in ("full", "summary"):
-        _log("PARSED LOCAL PLAN A", jdump(local_plan_to_dict(plan_a)))
-        _log("PARSED LOCAL PLAN B", jdump(local_plan_to_dict(plan_b)))
+        _log("PARSED PLAN A (before 2b)", jdump(local_plan_to_dict(plan_a)))
+        _log("PARSED PLAN B (before 2b)", jdump(local_plan_to_dict(plan_b)))
+
+    # Phase 2b: rule-based PASS 삽입
+    if use_handoff:
+        _banner("PHASE 2b - HANDOFF INJECTION (Rule-based)")
+        plan_a = _build_phase2b_handoffs(plan_a, offer_a, offer_b)
+        plan_b = _build_phase2b_handoffs(plan_b, offer_b, offer_a)
+
+    if verbose in ("full", "summary"):
+        _log("FINAL PLAN A (after 2b)", jdump(local_plan_to_dict(plan_a)))
+        _log("FINAL PLAN B (after 2b)", jdump(local_plan_to_dict(plan_b)))
 
     print(f"\n  A: U_plan={plan_a.U_plan:.3f} | steps={len(plan_a.steps)} | handoffs={len(plan_a.handoffs)}")
     print(f"  B: U_plan={plan_b.U_plan:.3f} | steps={len(plan_b.steps)} | handoffs={len(plan_b.handoffs)}")
