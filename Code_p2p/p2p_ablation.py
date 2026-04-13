@@ -1,11 +1,9 @@
-# ══════════════════════════════════════════════════════════════════════════════
 # ablation.py
-# Ablation 실험: 컴포넌트별 기여도 측정 (P2P 파이프라인용)
-# ══════════════════════════════════════════════════════════════════════════════
+# Ablation 실험: 컴포넌트별 기여도 측정
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 def run_ablation(
@@ -17,19 +15,11 @@ def run_ablation(
     5가지 ablation 설정을 순서대로 실행하고 결과를 비교한다.
 
     설정:
-        Full (Ours)       : 모든 컴포넌트 활성화
-        w/o Negotiation   : Phase 4 P2P 협상 비활성화
-        w/o Human Query   : Phase 6 비활성화
-        w/o Handoff       : handoff 선언 비활성화
-        w/o Offer         : offer 없이 방 타입 정보만 전달
-
-    Args:
-        task_id : tasks.json의 ID (예: "task_003")
-        img_a   : agent_A 이미지 경로
-        img_b   : agent_B 이미지 경로
-
-    Returns:
-        각 설정별 run() 결과 dict 리스트
+        Full (Ours)     : 모든 컴포넌트 활성화
+        w/o Negotiation : Phase 4 협상 비활성화 → 협상의 conflict 감소 기여 측정
+        w/o Human Query : Phase 6 비활성화 → deferred HQ 기여 측정
+        w/o Handoff     : handoff 선언 비활성화 → PASS/INFORM 기여 측정
+        w/o Offer       : offer 없이 방 타입 정보만 전달 → offer exchange 기여 측정
 
     사용 예:
         from p2p_ablation import run_ablation
@@ -70,20 +60,35 @@ def run_ablation(
 
 
 def _print_summary(results: List[Dict]):
-    print("\n" + "█" * 80)
+    print("\n" + "█" * 90)
     print("  ABLATION SUMMARY")
-    print("█" * 80)
-    print(f"  {'Method':<22} {'Comp':>5} {'Exec':>5} {'Obs':>5} {'Hand':>5} {'Seq':>5} {'Total':>6} {'Conv':>5} {'Rnd':>4}")
-    print(f"  {'─'*66}")
+    print("█" * 90)
+    print(
+        f"  {'Method':<22} "
+        f"{'Conf↓':>6} {'Conf_R':>6} {'Conv':>5} "
+        f"{'Rnd':>4} {'Obs':>5} {'Hand':>5} {'HQ':>4}"
+    )
+    print(f"  {'─'*72}")
     for r in results:
-        sc   = r["scores"]
+        m    = r["metrics"]
         conv = r["convergence"]
         print(
             f"  {r['label']:<22} "
-            f"{sc['completeness']:>5.2f} {sc['executability']:>5.2f} "
-            f"{sc['observability']:>5.2f} {sc['handoff']:>5.2f} {sc['sequential']:>5.2f} "
-            f"{sc['total']:>6.3f} "
+            f"{m['conflicts_before']:>6} "
+            f"{m['conflict_reduction']:>6.2f} "
             f"{'Y' if conv['converged'] else 'N':>5} "
-            f"{r['negotiation']['rounds']:>4}"
+            f"{m['negotiation_rounds']:>4} "
+            f"{m['observability_rate']:>5.2f} "
+            f"{m['handoff_match_rate']:>5.2f} "
+            f"{m['hq_asked']:>4}"
         )
+    print()
+    print("  Columns:")
+    print("    Conf↓   : conflicts detected before negotiation")
+    print("    Conf_R  : conflict reduction rate after negotiation")
+    print("    Conv    : Phase 5 convergence (Y/N)")
+    print("    Rnd     : negotiation rounds used")
+    print("    Obs     : observability compliance rate")
+    print("    Hand    : PASS handoff match rate")
+    print("    HQ      : human queries asked")
     print()
