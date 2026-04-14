@@ -639,7 +639,6 @@
         "Move small furniture (e.g., footstools, coffee tables) to the perimeter to prevent injury",
         "Ensure the TV or tablet is positioned at eye level for workout videos",
         "Set the lighting to a bright, energetic level and ensure proper ventilation",
-        "Place a sweat towel and any necessary equipment (dumbbells, mats) in the center"
       ],
       "kitchen": [
         "Fill a water bottle or pitcher and place it in an easily accessible spot",
@@ -662,7 +661,7 @@
       "living_room": [
         "Tidy up miscellaneous items on the table and sofa",
         "Clear items from the floor for safe movement",
-        "Set the lighting to be bright and welcoming"
+        "Set the lighting to be bright"
       ],
       "kitchen": [
         "Complete dishwashing and organize the sink area",
@@ -670,7 +669,7 @@
       ],
       "bedroom": [
         "Quickly tidy blankets and pillows",
-        "Empty the trash bin or hide it from view"
+        "Clear small objects (coins, buttons, batteries) from floors/tables"
       ],
       "bathroom": [
         "Ensure clean towels are hung and soap is available",
@@ -698,7 +697,7 @@
         "Prepare child-friendly snacks and drinks"
       ],
       "bedroom": [
-        "Move medicines and sharp objects to locked drawers or high shelves",
+        "Move sharp objects to locked drawers or high shelves",
         "Organize or hide exposed floor cables"
       ],
       "bathroom": [
@@ -718,15 +717,13 @@
     ],
     "ground_truth": {
       "kitchen": [
-        "Check available snack ingredients and prepare popcorn",
-        "Take drinks out from the refrigerator and set out cups and trays",
-        "Place napkins and wet wipes on the serving tray"
+        "Check available snack ingredients and prepare snacks",
+        "Take drinks out and set out cups and trays",
+        "Place napkins or wet wipes"
       ],
       "living_room": [
         "Clear the line of sight to the TV and adjust sofa cushions",
-        "Place blankets on the sofa and dim the main lights",
         "Turn on indirect or mood lighting",
-        "Place the remote control and snack tray in accessible spots"
       ]
     }
   },
@@ -737,14 +734,12 @@
       "Kitchen: Self-service station and drink prep",
       "Kitchen: Waste and cleaning capacity management",
       "Living Room: Seating expansion and tidying",
-      "Living Room: Atmosphere and AV system check"
     ],
     "ground_truth": {
       "kitchen": [
         "Clear counter space and set up a food/drink station",
-        "Arrange plates, forks, and napkins for self-service",
-        "Prepare bottled drinks in an ice bucket or refrigerated area",
-        "Empty the trash bin and prepare extra bags"
+        "Arrange plates, forks, or napkins for self-service",
+        "Prepare drinks and cups",
       ],
       "living_room": [
         "Check the number of seats and move extra chairs from other rooms",
@@ -752,5 +747,27 @@
         "Set the lighting to bright and check the speaker system"
       ]
     }
+  },
+  {
+  "id": "task_030",
+  "description": "Prepare the home for a long-term absence (vacation). Inspect the kitchen, bedroom to ensure all utilities are safe, windows are secured, and the security system is armed.",
+  "subtasks": [
+    "Utility and appliance safety verification in kitchen",
+    "Security and privacy setup in bedroom",
+    "Environmental and peripheral check in living room",
+    "Home-away mode transition and final report"
+  ],
+  "ground_truth": {
+    "kitchen": [
+      "Check that the stove and oven are completely turned off",
+      "Empty the food on the table and ensure the refrigerator door is tightly closed",
+      "Check for any signs of water leaks under the sink"
+    ],
+    "bedroom": [
+      "Ensure all windows and blinds are fully closed and locked",
+      "Unplug electronics and chargers from outlets",
+      "Check that all closet doors and drawers are closed",
+      "Verify that the room is clear of any active electronics (e.g., humidifiers, heaters)"
+    ],
   }
-]
+}
