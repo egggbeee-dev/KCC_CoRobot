@@ -197,16 +197,30 @@ def compute_plan_uncertainty(step_uncertainties: List[float]) -> float:
 # ── 출력 헬퍼 (verifier 제거 후 여기로 이동) ──────────────────────────────────
 
 def format_joint_plan(plan: List[Dict]) -> str:
-    """Joint plan을 읽기 좋은 형태로 출력."""
+    """Joint plan을 읽기 좋은 형태로 출력 (depends_on을 자연어로 표시)."""
     if not plan:
         return "  (empty)"
+
+    id_to_action: Dict[int, str] = {s["step_id"]: s["action"] for s in plan}
+
+    def _dep_text(dep_ids: List[int]) -> str:
+        if not dep_ids:
+            return ""
+        labels = []
+        for did in dep_ids:
+            act = id_to_action.get(did, f"step {did}")
+            labels.append(f'"{act[:40]}{"..." if len(act) > 40 else ""}')
+        return " ← after: " + ", ".join(labels)
+
     lines = []
     for s in plan:
-        dep  = f" deps={s['depends_on']}" if s.get("depends_on") else ""
-        hoff = f" [{s['handoff_type']}→{s['target_agent']}]" if s.get("handoff_type") else ""
-        note = f" ({s['notes']})" if s.get("notes") else ""
+        dep_str = _dep_text(s.get("depends_on", []))
+        hoff    = f" [{s['handoff_type']}→{s['target_agent']}]" if s.get("handoff_type") else ""
+        # auto-added / [COORD] notes는 출력에서 숨김
+        raw_note = s.get("notes", "")
+        note     = f" ({raw_note})" if raw_note and "auto-" not in raw_note and "[COORD]" not in raw_note else ""
         lines.append(
-            f"  {s['step_id']:>2}. [T={s['time_min']:>2}m] [{s['room']:<12}] [{s['agent_id']}]  "
-            f"{s['action']}{hoff}{dep}{note}"
+            f"  {s['step_id']:>2}. [T={s['time_min']:>2}m] [{s.get('room','?'):<12}] [{s.get('agent_id','?')}]  "
+            f"{s['action']}{hoff}{note}{dep_str}"
         )
     return "\n".join(lines)
