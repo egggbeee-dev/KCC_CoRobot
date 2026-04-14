@@ -313,8 +313,10 @@ OTHER AGENT'S OFFER ({other.room_type}):
 {jdump(offer_to_dict(other))}
 
 MATCHED HANDOFF OPPORTUNITIES:
-- Items YOU will PASS to other agent: {json.dumps(matched_provides, ensure_ascii=False)}
-- Items other agent will PASS to YOU: {json.dumps(matched_needs, ensure_ascii=False)}"""
+- Items YOU will PASS to other agent (YOU MUST create a PASS step if this is not empty):
+  {json.dumps(matched_provides, ensure_ascii=False)}
+- Items other agent will PASS to YOU (add a receive step if not empty):
+  {json.dumps(matched_needs, ensure_ascii=False)}"""
     else:
         context = f"YOUR ROOM: {my.room_type}\nOTHER AGENT'S ROOM: {other.room_type}"
 
@@ -330,10 +332,14 @@ Generate your LOCAL PLAN:
 1. Steps ONLY in your room ({my.room_type}). Use only visible objects.
 2. Generate 4-6 steps over 0-25 minutes.
 3. Each step must be unique — no repeated actions.
-4. PASS: carry prepared item to room boundary. Must have depends_on=[prep_step].
-   Use at most 1-2 PASS steps. Do NOT PASS a preparation step directly.
-5. If receiving an item: add receive step with depends_on=[PASS_step_id],
-   time_min AFTER the PASS step.
+4. **CRITICAL — PASS handoff**:
+   - Items YOU will PASS to other agent: {{json.dumps(matched_provides, ensure_ascii=False)}}
+   - If this list is NOT empty, you MUST add a PASS step.
+   - PASS step: carry the prepared item to the room boundary.
+     handoff_type="PASS", target_agent=<receiver_id>, depends_on=[<your prep step ids>]
+   - The PASS step must come AFTER all prep steps for that item.
+5. If receiving an item (Items other agent will PASS to YOU: {{json.dumps(matched_needs, ensure_ascii=False)}}):
+   - Add a "receive" step: depends_on=[<PASS step id>], time_min AFTER the PASS step.
 6. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
@@ -522,13 +528,23 @@ def _ensure_pass_steps(
         if has_pass:
             return sender_plan
 
-        # can_provide ↔ need_from_other 매칭 확인
-        matched_provides = [
-            p for p in sender_offer.can_provide
-            if any(_fuzzy_match_soft(p, n) for n in receiver_offer.need_from_other)
-               or any(_fuzzy_match_soft(p, cd) for cd in receiver_offer.can_do
-                      if _resource_keywords(p) & _resource_keywords(cd))
-        ]
+        # can_provide ↔ 매칭 확인 (3단계, 점차 완화)
+        matched_provides = []
+        for p in sender_offer.can_provide:
+            pkw = _resource_keywords(p)
+            # 1차: need_from_other fuzzy match
+            if any(_fuzzy_match_soft(p, n) for n in receiver_offer.need_from_other):
+                matched_provides.append(p)
+                continue
+            # 2차: receiver can_do와 keyword 겹침 (stemming 기반)
+            if any(pkw & _resource_keywords(cd) for cd in receiver_offer.can_do):
+                matched_provides.append(p)
+                continue
+            # 3차: can_provide 자체가 있으면 inject 시도
+            #      (LLM이 need_from_other를 애매하게 표현해도 보완)
+            if p:
+                matched_provides.append(p)
+
         if not matched_provides:
             return sender_plan
 
@@ -576,6 +592,23 @@ def _ensure_pass_steps(
         )
         print(f"  [ENSURE_PASS] {sender_id}: PASS step{new_sid} injected "
               f"(T={pass_time}m) for '{provide}' → {receiver_id}")
+
+        # PASS 삽입 후 receiver 플랜에서 관련 스텝에 depends_on 자동 연결
+        provide_kw = _resource_keywords(provide)
+        for rs in receiver_plan.steps:
+            # notify/receive/PASS 스텝은 건너뜀
+            if rs.handoff_type == "PASS" or rs.action.lower().startswith(("receive", "notify")):
+                continue
+            act_kw = _resource_keywords(rs.action)
+            # keyword 겹침으로 관련 스텝 탐지
+            if provide_kw & act_kw:
+                if new_sid not in rs.depends_on:
+                    rs.depends_on = sorted(set(rs.depends_on + [new_sid]))
+                    if rs.time_min <= pass_time:
+                        rs.time_min = pass_time + 1
+                    print(f"  [ENSURE_PASS] {receiver_id} step{rs.step_id} "
+                          f"'{rs.action[:40]}' → depends_on=[...,{new_sid}], T={rs.time_min}m")
+
         return sender_plan
 
     plan_a = _inject_if_missing(plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B")
