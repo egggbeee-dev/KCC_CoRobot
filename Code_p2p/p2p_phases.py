@@ -380,6 +380,20 @@ def _normalize_pass_steps(steps: List[PlanStep]) -> List[PlanStep]:
             s.target_agent = None
             continue
 
+        # 조건 0b: action이 배치/수신 동사로 시작하면 receiver 역할 → PASS 제거
+        # "place snacks", "set up", "organize", "receive" 등은 sender가 아님
+        _RECEIVER_VERBS = {
+            "place", "set", "organize", "receive", "pick", "collect",
+            "grab", "take", "get", "handle", "sort", "put",
+        }
+        first_word = s.action.lower().split()[0] if s.action.strip() else ""
+        if first_word in _RECEIVER_VERBS:
+            print(f"  [NORM] step{s.step_id} PASS removed: action '{s.action[:40]}' "
+                  f"is receiver/placement verb, not sender")
+            s.handoff_type = None
+            s.target_agent = None
+            continue
+
         # 조건 1: depends_on 없으면 제거 (준비 스텝 없이 바로 PASS)
         if not s.depends_on:
             print(f"  [NORM] step{s.step_id} PASS removed: no depends_on")
@@ -469,9 +483,16 @@ def _parse_local_plan(
         raw_deps = _norm_depends(item.get("depends_on"))
         deps     = [d + step_offset for d in raw_deps]
 
+        # time_min 파싱: 0~30 범위로 clamp, step_id와 혼동 방지
+        raw_time = item.get("time_min", 0)
+        # step_id가 time_min에 잘못 들어온 경우 보정 (예: time_min=26 but step_id=1)
+        parsed_time = safe_int(raw_time, 0)
+        if parsed_time > 25 and parsed_time == safe_int(item.get("step_id", -1), -1):
+            parsed_time = 0  # step_id가 잘못 들어온 경우 0으로 초기화
+
         step = PlanStep(
             step_id       = sid,
-            time_min      = max(0, min(30, safe_int(item.get("time_min", 0), 0))),
+            time_min      = max(0, min(30, parsed_time)),
             room          = my.room_type,
             agent_id      = my.agent_id,
             action        = action,
@@ -593,26 +614,87 @@ def _ensure_pass_steps(
         print(f"  [ENSURE_PASS] {sender_id}: PASS step{new_sid} injected "
               f"(T={pass_time}m) for '{provide}' → {receiver_id}")
 
-        # PASS 삽입 후 receiver 플랜에서 관련 스텝에 depends_on 자동 연결
+        # PASS 삽입 후 receiver 플랜에서 연결할 스텝 탐색 (3단계)
         provide_kw = _resource_keywords(provide)
-        for rs in receiver_plan.steps:
-            # notify/receive/PASS 스텝은 건너뜀
-            if rs.handoff_type == "PASS" or rs.action.lower().startswith(("receive", "notify")):
-                continue
-            act_kw = _resource_keywords(rs.action)
-            # keyword 겹침으로 관련 스텝 탐지
-            if provide_kw & act_kw:
-                if new_sid not in rs.depends_on:
-                    rs.depends_on = sorted(set(rs.depends_on + [new_sid]))
-                    if rs.time_min <= pass_time:
-                        rs.time_min = pass_time + 1
-                    print(f"  [ENSURE_PASS] {receiver_id} step{rs.step_id} "
-                          f"'{rs.action[:40]}' → depends_on=[...,{new_sid}], T={rs.time_min}m")
+
+        # 연결 대상 후보: PASS/receive/notify 스텝 제외
+        candidates = [
+            rs for rs in receiver_plan.steps
+            if rs.handoff_type != "PASS"
+            and not rs.action.lower().startswith(("receive", "notify"))
+        ]
+
+        linked = False
+
+        # 1단계: provide keyword 직접 겹침
+        for rs in candidates:
+            if provide_kw & _resource_keywords(rs.action):
+                _link(rs, new_sid, pass_time, receiver_id)
+                linked = True
+
+        # 2단계: receiver의 need_from_other와 action fuzzy match
+        if not linked:
+            for rs in candidates:
+                if any(_fuzzy_match_soft(rs.action, n) for n in receiver_offer.need_from_other):
+                    _link(rs, new_sid, pass_time, receiver_id)
+                    linked = True
+
+        # 3단계: receiver can_do 중 provider와 의미상 관련된 것
+        # (snack, food, drink, item, tray, bowl, cup, plate 등 공통 food 키워드)
+        _FOOD_KW = {"snack", "food", "drink", "item", "tray", "bowl",
+                    "cup", "plate", "popcorn", "fruit", "bread", "water",
+                    "juice", "soda", "glass", "bottle"}
+        if not linked:
+            provide_is_food = bool(provide_kw & _FOOD_KW)
+            if provide_is_food:
+                for rs in candidates:
+                    act_kw = _resource_keywords(rs.action)
+                    # "place", "set", "put" 등 배치 동사 + food 관련 키워드
+                    _PLACE_VERBS = {"place", "put", "set", "lay", "arrange",
+                                    "bring", "serve", "deliver", "receive"}
+                    raw_words = set(re.findall(r"\w+", rs.action.lower()))
+                    if raw_words & _PLACE_VERBS and act_kw & _FOOD_KW:
+                        _link(rs, new_sid, pass_time, receiver_id)
+                        linked = True
+
+        # 4단계: 최후 fallback — receiver 플랜에서 가장 먼저 나오는 스텝 연결
+        if not linked and candidates:
+            # time_min이 pass_time 이상인 스텝 중 첫 번째
+            later = [rs for rs in candidates if rs.time_min >= pass_time]
+            if later:
+                rs = min(later, key=lambda s: s.time_min)
+                _link(rs, new_sid, pass_time, receiver_id)
+                linked = True
+
+        if not linked:
+            print(f"  [ENSURE_PASS] WARNING: no receiver step linked for '{provide}'")
 
         return sender_plan
 
+    def _link(rs: PlanStep, notify_sid: int, pass_time: int, receiver_id: str):
+        """receiver step에 depends_on 연결 + time_min 조정."""
+        if notify_sid in rs.depends_on:
+            return
+        rs.depends_on = sorted(set(rs.depends_on + [notify_sid]))
+        if rs.time_min <= pass_time:
+            rs.time_min = pass_time + 1
+        print(f"  [ENSURE_PASS] {receiver_id} step{rs.step_id} "
+              f"'{rs.action[:45]}' → depends_on=[...,{notify_sid}], T={rs.time_min}m")
+
     plan_a = _inject_if_missing(plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B")
-    plan_b = _inject_if_missing(plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A")
+
+    # B→A: receiver(A)의 need_from_other가 confirmation/정보성이면 PASS 불필요
+    _CONFIRM_KW = {"confirmation", "confirm", "notify", "notification",
+                   "status", "ready", "complete", "done", "check", "clear"}
+    a_needs_physical = any(
+        not (_resource_keywords(n) & _CONFIRM_KW)
+        for n in offer_a.need_from_other
+    )
+    if a_needs_physical:
+        plan_b = _inject_if_missing(plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A")
+    else:
+        print(f"  [ENSURE_PASS] B→A inject skipped: A only needs confirmation-type info")
+
     return plan_a, plan_b
 
 def phase2_local_plan(
@@ -1426,14 +1508,31 @@ def _auto_add_pass_receivers(
 
         max_id += 1
         receiver_time = min(30, pass_s["time_min"] + 1)
-        # receiver action: PASS step에서 아이템 이름 추출해서 자연스럽게 생성
+        # receiver action: 자연스러운 액션 생성
         pass_action = pass_s["action"]
-        # "carry X to Y" 패턴에서 X 추출
-        import re as _re
-        carry_m = _re.search(r"carry (.+?) to ", pass_action, _re.IGNORECASE)
-        item_name = carry_m.group(1) if carry_m else "item"
-        sender_id = pass_s.get("agent_id", "other agent")
-        receiver_action = f"receive {item_name} from {sender_id} and place in {room_map[target]}"
+        sender_id   = pass_s.get("agent_id", "other agent")
+        sender_room  = room_map.get(sender_id, "other room")
+
+        # "carry X to Y" 또는 "bring X" 패턴에서 아이템명 추출
+        carry_m = re.search(r"carry (.+?) (?:to|for)", pass_action, re.IGNORECASE)
+        bring_m = re.search(r"bring (.+?) (?:to|for)", pass_action, re.IGNORECASE)
+        if carry_m:
+            item_name = carry_m.group(1).strip()
+        elif bring_m:
+            item_name = bring_m.group(1).strip()
+        else:
+            # "carry X" 전체에서 동사 이후 추출
+            words = pass_action.split()
+            item_name = " ".join(words[1:4]) if len(words) > 1 else "item"
+
+        # 30자 초과면 축약
+        if len(item_name) > 35:
+            item_name = item_name[:35].rsplit(" ", 1)[0]
+
+        receiver_action = (
+            f"receive {item_name} from {sender_room} "
+            f"and place in {room_map[target]}"
+        )
 
         additions.append({
             "step_id":       max_id,
