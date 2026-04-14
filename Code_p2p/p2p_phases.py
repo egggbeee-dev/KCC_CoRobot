@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -212,8 +213,12 @@ def phase1_offer(
 ) -> Tuple[Offer, Offer]:
     _banner("PHASE 1 - OBSERVATION & OFFER GENERATION")
     prompt = build_phase1_prompt(task)
-    raw_a, _ = run_vlm(img_a, prompt)
-    raw_b, _ = run_vlm(img_b, prompt)
+    # 병렬 VLM 호출 (A/B 동시)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_a = ex.submit(run_vlm, img_a, prompt, False)
+        fut_b = ex.submit(run_vlm, img_b, prompt, False)
+    raw_a, _ = fut_a.result()
+    raw_b, _ = fut_b.result()
 
     if verbose == "full":
         _log("AGENT A RAW OFFER", raw_a)
@@ -362,7 +367,14 @@ def _normalize_pass_steps(steps: List[PlanStep]) -> List[PlanStep]:
         if s.handoff_type != "PASS":
             continue
 
-        # 조건 1: depends_on 없으면 제거
+        # 조건 0: target_agent 없으면 제거 (방향 불명확)
+        if not s.target_agent or s.target_agent not in {"agent_A", "agent_B"}:
+            print(f"  [NORM] step{s.step_id} PASS removed: no valid target_agent")
+            s.handoff_type = None
+            s.target_agent = None
+            continue
+
+        # 조건 1: depends_on 없으면 제거 (준비 스텝 없이 바로 PASS)
         if not s.depends_on:
             print(f"  [NORM] step{s.step_id} PASS removed: no depends_on")
             s.handoff_type = None
@@ -370,9 +382,10 @@ def _normalize_pass_steps(steps: List[PlanStep]) -> List[PlanStep]:
             continue
 
         # 조건 2: depends_on이 자기 플랜 내 스텝 참조하는지
+        #         (cross-agent dep만 있는 경우 → receiver 역할이므로 PASS 제거)
         valid_deps = [d for d in s.depends_on if d in my_step_ids]
         if not valid_deps:
-            print(f"  [NORM] step{s.step_id} PASS removed: deps not in own plan")
+            print(f"  [NORM] step{s.step_id} PASS removed: deps not in own plan (likely receiver, not sender)")
             s.handoff_type = None
             s.target_agent = None
             continue
@@ -483,6 +496,92 @@ def _parse_local_plan(
     return LocalPlan(my.agent_id, steps, compute_plan_uncertainty(all_unc), hq_list, handoffs)
 
 
+
+
+def _ensure_pass_steps(
+    plan_a: LocalPlan, plan_b: LocalPlan,
+    offer_a: Offer, offer_b: Offer,
+) -> Tuple[LocalPlan, LocalPlan]:
+    """
+    Phase 2 이후 PASS 보완: offer 매칭 기반으로 PASS가 없으면 자동 삽입.
+
+    LLM이 PASS를 아예 생성하지 않은 경우를 보완한다.
+    A→B: offer_a.can_provide ↔ offer_b.need_from_other 매칭 → A에 PASS 삽입
+    B→A: offer_b.can_provide ↔ offer_a.need_from_other 매칭 → B에 PASS 삽입
+    """
+    def _inject_if_missing(
+        sender_plan: LocalPlan, receiver_plan: LocalPlan,
+        sender_offer: Offer, receiver_offer: Offer,
+        sender_id: str, receiver_id: str,
+    ) -> LocalPlan:
+        # sender 플랜에 이미 유효한 PASS가 있으면 스킵
+        has_pass = any(
+            s.handoff_type == "PASS" and s.target_agent == receiver_id
+            for s in sender_plan.steps
+        )
+        if has_pass:
+            return sender_plan
+
+        # can_provide ↔ need_from_other 매칭 확인
+        matched_provides = [
+            p for p in sender_offer.can_provide
+            if any(_fuzzy_match_soft(p, n) for n in receiver_offer.need_from_other)
+               or any(_fuzzy_match_soft(p, cd) for cd in receiver_offer.can_do
+                      if _resource_keywords(p) & _resource_keywords(cd))
+        ]
+        if not matched_provides:
+            return sender_plan
+
+        provide = matched_provides[0]
+
+        # sender 플랜에서 이 아이템과 관련된 prep step 찾기 (stemming 기반)
+        provide_kw = _resource_keywords(provide)
+        prep_steps = [
+            s for s in sender_plan.steps
+            if provide_kw & _resource_keywords(s.action)
+            and s.handoff_type is None
+        ]
+        if not prep_steps:
+            # fallback: 마지막 non-PASS step
+            prep_steps = [s for s in sender_plan.steps if s.handoff_type is None]
+        if not prep_steps:
+            return sender_plan
+
+        last_prep = max(prep_steps, key=lambda s: s.time_min)
+
+        # PASS step 생성
+        all_ids = {s.step_id for s in sender_plan.steps} | {s.step_id for s in receiver_plan.steps}
+        new_sid  = max(all_ids, default=0) + 1
+        while new_sid in all_ids:
+            new_sid += 1
+
+        pass_time = min(30, last_prep.time_min + 5)
+        pass_step = PlanStep(
+            step_id       = new_sid,
+            time_min      = pass_time,
+            room          = sender_offer.room_type,
+            agent_id      = sender_id,
+            action        = f"carry {provide} to room boundary for {receiver_id} pickup",
+            preconditions = [f"step {last_prep.step_id} completed"],
+            depends_on    = [last_prep.step_id],
+            handoff_type  = "PASS",
+            target_agent  = receiver_id,
+            uncertainty   = 0.15,
+            notes         = f"auto-injected PASS: {provide}",
+        )
+        sender_plan.steps.append(pass_step)
+        sender_plan.steps.sort(key=lambda s: (s.time_min, s.step_id))
+        sender_plan.handoffs.append(
+            Handoff(new_sid, pass_step.action, "PASS", receiver_id, "")
+        )
+        print(f"  [ENSURE_PASS] {sender_id}: PASS step{new_sid} injected "
+              f"(T={pass_time}m) for '{provide}' → {receiver_id}")
+        return sender_plan
+
+    plan_a = _inject_if_missing(plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B")
+    plan_b = _inject_if_missing(plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A")
+    return plan_a, plan_b
+
 def phase2_local_plan(
     offer_a: Offer, offer_b: Offer,
     img_a: str, img_b: str, task: str,
@@ -494,8 +593,12 @@ def phase2_local_plan(
     prompt_a = build_phase2_prompt(offer_a, offer_b, task, use_offer)
     prompt_b = build_phase2_prompt(offer_b, offer_a, task, use_offer)
 
-    raw_a, logp_a = run_vlm(img_a, prompt_a, return_logprobs=True)
-    raw_b, logp_b = run_vlm(img_b, prompt_b, return_logprobs=True)
+    # 병렬 VLM 호출
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_a = ex.submit(run_vlm, img_a, prompt_a, True)
+        fut_b = ex.submit(run_vlm, img_b, prompt_b, True)
+    raw_a, logp_a = fut_a.result()
+    raw_b, logp_b = fut_b.result()
 
     if verbose == "full":
         _log("AGENT A RAW LOCAL PLAN", raw_a)
@@ -503,6 +606,10 @@ def phase2_local_plan(
 
     plan_a = _parse_local_plan(raw_a, logp_a, offer_a, use_handoff, step_offset=0)
     plan_b = _parse_local_plan(raw_b, logp_b, offer_b, use_handoff, step_offset=AGENT_B_STEP_OFFSET)
+
+    # PASS 자동 보완: offer 매칭 기반으로 PASS 없으면 삽입
+    if use_handoff and use_offer:
+        plan_a, plan_b = _ensure_pass_steps(plan_a, plan_b, offer_a, offer_b)
 
     if verbose in ("full", "summary"):
         _log("PARSED LOCAL PLAN A", jdump(local_plan_to_dict(plan_a)))
@@ -521,10 +628,17 @@ def phase2_local_plan(
 # PHASE 3: CONFLICT DETECTION
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _stem(word: str) -> str:
+    """간단한 rule-based stemming: 복수형 s 제거 (snacks→snack, fruits→fruit)."""
+    if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
 def _resource_keywords(action: str) -> Set[str]:
-    """액션에서 자원 키워드 추출 (불용어 제거)."""
-    words = set(re.findall(r"\w+", action.lower()))
-    return words - FUZZY_STOPWORDS
+    """액션에서 자원 키워드 추출 (불용어 제거 + stemming)."""
+    words = set(re.findall(r"\w+", action.lower())) - FUZZY_STOPWORDS
+    return {_stem(w) for w in words}
 
 
 def detect_conflicts(
@@ -563,6 +677,9 @@ def detect_conflicts(
             for j in range(i + 1, len(slot_steps)):
                 si, sj = slot_steps[i], slot_steps[j]
                 if si.agent_id == sj.agent_id:
+                    continue
+                # 다른 방이면 같은 키워드라도 실제 자원 충돌 아님
+                if si.room != sj.room:
                     continue
                 ki = _resource_keywords(si.action)
                 kj = _resource_keywords(sj.action)
@@ -948,14 +1065,17 @@ def phase4_negotiation(
             "agent_A", offer_a, offer_b, cur_a, cur_b,
             remaining, locked, rnd, prev_props_b, task,
         )
-        raw_a, _ = run_vlm(img_a, prompt_a)
-        props_a  = _parse_proposals(raw_a, "agent_A")
-
         prompt_b = _build_negotiation_prompt(
             "agent_B", offer_b, offer_a, cur_a, cur_b,
             remaining, locked, rnd, prev_props_a, task,
         )
-        raw_b, _ = run_vlm(img_b, prompt_b)
+        # 병렬 VLM 호출
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_a = ex.submit(run_vlm, img_a, prompt_a, False)
+            fut_b = ex.submit(run_vlm, img_b, prompt_b, False)
+        raw_a, _ = fut_a.result()
+        raw_b, _ = fut_b.result()
+        props_a  = _parse_proposals(raw_a, "agent_A")
         props_b  = _parse_proposals(raw_b, "agent_B")
 
         if verbose == "full":
@@ -1037,10 +1157,29 @@ def phase5_convergence_check(
     all_steps = steps_a + steps_b
 
     # -- 조건 1: PASS 매칭 -------------------------------------------------------
-    pass_step_ids  = {s["step_id"] for s in all_steps if s.get("handoff_type") == "PASS"}
+    # 완화된 조건: PASS step_id가 다른 스텝의 depends_on에 있거나,
+    # target_agent 플랜에 PASS 이후 시간의 스텝이 존재하면 OK로 간주
+    pass_steps_map = {s["step_id"]: s for s in all_steps if s.get("handoff_type") == "PASS"}
     all_depends    = {dep for s in all_steps for dep in s.get("depends_on", [])}
-    unmatched_pass = pass_step_ids - all_depends
-    pass_matched   = len(unmatched_pass) == 0
+
+    unmatched_pass = set()
+    for sid, ps in pass_steps_map.items():
+        target = ps.get("target_agent")
+        # 1차: depends_on으로 직접 참조
+        if sid in all_depends:
+            continue
+        # 2차 완화: target 플랜에 PASS 이후 시간의 스텝이 있으면 수렴으로 간주
+        # (Finalize에서 auto_add_pass_receivers가 receiver를 추가하므로)
+        target_has_later_step = any(
+            s.get("agent_id") == target and s.get("time_min", 0) >= ps.get("time_min", 0)
+            and s.get("step_id") != sid
+            for s in all_steps
+        )
+        if not target_has_later_step:
+            unmatched_pass.add(sid)
+
+    pass_matched = len(unmatched_pass) == 0
+    pass_step_ids = set(pass_steps_map.keys())
 
     # -- 조건 2: cycle 없음 -------------------------------------------------------
     no_dep_cycle = not _has_cycle(all_steps)
@@ -1087,6 +1226,39 @@ def phase5_convergence_check(
     )
 
 
+
+# ── Phase 6 Human Query Template ─────────────────────────────────────────────
+_HQ_TEMPLATES: Dict[str, str] = {
+    "UNMATCHED_PASS": (
+        "A PASS handoff has no matching receiver step. "
+        "Should the receiving agent add a step to pick up the item at the room boundary?"
+    ),
+    "DEP_CYCLE": (
+        "A circular dependency was detected in the plan. "
+        "Which step should be reordered to break the cycle?"
+    ),
+    "DEPENDENCY": (
+        "An agent can provide an item the other agent needs, but no PASS step exists. "
+        "Should the providing agent carry the item to the room boundary?"
+    ),
+    "REDUNDANCY": (
+        "Two agents are attempting the same task. "
+        "Which agent should handle it, and should the other skip it?"
+    ),
+    "CANNOT_DO": (
+        "An agent is attempting something outside its capability. "
+        "Should this step be removed or reassigned to the other agent?"
+    ),
+    "UNMATCHED_NEED": (
+        "An agent needs something that neither agent can currently provide. "
+        "How should this unmet need be handled?"
+    ),
+    "OBSERVABILITY": (
+        "A step references objects outside the agent's visible scope. "
+        "Should this step be modified or removed?"
+    ),
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # PHASE 6: DEFERRED HUMAN QUERY
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1098,21 +1270,10 @@ def _generate_hq_question(
     offer_b: Offer,
     img: str,
 ) -> str:
-    prompt = f"""You are coordinating two home agents working on a task.
+    """Template 기반 질문 생성 — VLM 호출 없음 (비용 절감)."""
+    template = _HQ_TEMPLATES.get(trigger_type, "How should the agents handle this issue?")
+    return f"{template}\nContext: {detail[:120]}"
 
-Agent A ({offer_a.room_type}) can do: {json.dumps(offer_a.can_do, ensure_ascii=False)}
-Agent B ({offer_b.room_type}) can do: {json.dumps(offer_b.can_do, ensure_ascii=False)}
-
-Issue detected ({trigger_type}): {detail}
-
-Generate ONE clear, specific, actionable question to ask the human operator.
-Write ONLY the question, no preamble or explanation. Keep it under 2 sentences."""
-
-    question, _ = run_vlm(img, prompt)
-    question = question.strip().strip('"').strip("'")
-    if not question or len(question) > 300:
-        return f"[{trigger_type}] {detail} - How should the agents handle this?"
-    return question
 
 
 def phase6_human_query(
@@ -1232,12 +1393,21 @@ def _auto_add_pass_receivers(
 
         max_id += 1
         receiver_time = min(30, pass_s["time_min"] + 1)
+        # receiver action: PASS step에서 아이템 이름 추출해서 자연스럽게 생성
+        pass_action = pass_s["action"]
+        # "carry X to Y" 패턴에서 X 추출
+        import re as _re
+        carry_m = _re.search(r"carry (.+?) to ", pass_action, _re.IGNORECASE)
+        item_name = carry_m.group(1) if carry_m else "item"
+        sender_id = pass_s.get("agent_id", "other agent")
+        receiver_action = f"receive {item_name} from {sender_id} and place in {room_map[target]}"
+
         additions.append({
             "step_id":       max_id,
             "time_min":      receiver_time,
             "room":          room_map[target],
             "agent_id":      target,
-            "action":        f"receive and place: {pass_s['action']}",
+            "action":        receiver_action,
             "preconditions": [f"step {sid} completed"],
             "depends_on":    [sid],  # original PASS step_id (재번호 전)
             "handoff_type":  None,
