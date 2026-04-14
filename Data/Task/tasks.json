@@ -12,9 +12,9 @@
       "kitchen": [
         "Check available snack ingredients like popcorn and crackers",
         "Take drinks (juice, soda, etc.) out from the refrigerator",
-        "Set out cups, bowls, and trays for serving",
+        "Set out cups, bowls, and trays for serving"
       ],
-      "living_room": [
+      "living room": [
         "Clear the line of sight to the TV (remove objects from the table)",
         "Adjust sofa and cushion placement for group seating",
         "Dim or turn off the main lights",
@@ -40,7 +40,7 @@
         "Prepare bottled or drinks on the counter or in an ice bucket",
         "Complete dishwashing and organize the sink"
       ],
-      "living_room": [
+      "living room": [
         "Check the number of seats and move extra chairs",
         "Tidy up miscellaneous items on the table",
         "Arrange cushions and the sofa",
@@ -72,7 +72,7 @@
         "Dim the lights or switch to a night light",
         "Close curtains or blinds to block light",
         "Place a glass of water on the side table",
-        "Connect the phone to a charger and place it nearby",
+        "Connect the phone to a charger and place it nearby"
       ]
     }
   },
@@ -207,7 +207,7 @@
       "bedroom": [
         "Quickly tidy the blankets and pillows",
         "Gather items from the floor and clear them",
-        "Put personal items (books,laptop, etc.) on table",
+        "Put personal items (books,laptop, etc.) on table"
       ]
     }
   },
@@ -225,9 +225,9 @@
         "Turn off main lights and switch to indirect or night lights",
         "Close curtains or blinds to block external light",
         "Tidy blankets and pillows for a comfortable setup",
-        "Identify and turn off noise sources (TV, alarms, etc.)",
+        "Identify and turn off noise sources (TV, alarms, etc.)"
       ],
-      "living_room": [
+      "living room": [
         "Arrange sofa cushions for comfortable reclining",
         "Place blankets on the sofa",
         "Dim or turn off the main lights",
@@ -247,19 +247,19 @@
       "Overnight accommodation planning in bedroom"
     ],
     "ground_truth": {
-      "living_room": [
-        "Identify current number of seats (sofa, chairs, etc.)",
-        "Tidy miscellaneous items and clear items from the floor",
-        "Ensure visibility of TV/entertainment for everyone",
-        "Secure pathways for drinks, snacks, and movement",
-        "Set lighting to be bright for a social atmosphere"
-      ],
       "bedroom": [
         "Check additional seating or floor space",
         "Move extra chairs from the bedroom to living room if needed",
         "Place additional floor cushions or mats",
         "Prepare bed sharing or floor bedding if overnight stay is required",
         "Provide guidance on securing personal space for each individual"
+      ],
+      "living room": [
+        "Identify current number of seats (sofa, chairs, etc.)",
+        "Tidy miscellaneous items and clear items from the floor",
+        "Ensure visibility of TV/entertainment for everyone",
+        "Secure pathways for drinks, snacks, and movement",
+        "Set lighting to be bright for a social atmosphere"
       ]
     }
   },
@@ -281,7 +281,7 @@
         "Check window light direction (screen reflection)",
         "If selected, clear items and place the laptop and charger"
       ],
-      "living_room": [
+      "living room": [
         "Check suitability of sofa + table combination",
         "Check table height relative to sitting position on the sofa",
         "Check living room lighting brightness and direction",
@@ -307,7 +307,7 @@
         "Check on the desk and inside drawers",
         "If found, place in designated spot and connect charger if low"
       ],
-      "living_room": [
+      "living room": [
         "Check between sofa cushions",
         "Check the floor under the number of seats (sofa, chairs, etc.)",
         "Check on and under tables",
@@ -334,7 +334,7 @@
         "Adjust the chair to a position suitable for posture",
         "Ventilate the room to improve concentration"
       ],
-      "living_room": [
+      "living room": [
         "Evaluate table, lighting, and distractions like the TV",
         "Turn off the TV or speakers",
         "Clear table surface of distractions",
@@ -352,16 +352,16 @@
       "Return to designated functional spot"
     ],
     "ground_truth": {
-      "living_room": [
+      "bedroom": [
+        "Search for cleaning materials like alcohol swabs or cotton swabs for gaps",
+        "Locate dirt things if not found in living room"
+      ],
+      "living room": [
         "Identify the type of contamination (dust, stains, food, etc.) on the remote",
         "Check for dirt in the gaps between buttons",
         "Wipe the entire surface of the remote",
         "Avoid excessive moisture near buttons",
         "Place it next to the TV or in a remote holder after drying"
-      ],
-      "bedroom": [
-        "Search for cleaning materials like alcohol swabs or cotton swabs for gaps",
-        "Locate dirt things if not found in living room"
       ]
     }
   },
@@ -375,19 +375,19 @@
       "Power conservation and bulb health report"
     ],
     "ground_truth": {
-      "living_room": [
-        "Check and turn on the main lights",
-        "Check status of indirect and stand lights",
-        "Report any burnt-out bulbs",
-        "Adjust brightness for activity (reading, TV, conversation)",
-        "Close curtains to block outside view and maintain warmth"
-      ],
       "bedroom": [
         "Check and turn on the main light or side stand",
         "Check location and suitability of the reading light",
         "Close curtains or blinds for privacy",
         "Keep only indirect lighting on if preparing for sleep",
         "Ensure lights in unused parts of the room are off"
+      ],
+      "living room": [
+        "Check and turn on the main lights",
+        "Check status of indirect and stand lights",
+        "Report any burnt-out bulbs",
+        "Adjust brightness for activity (reading, TV, conversation)",
+        "Close curtains to block outside view and maintain warmth"
       ]
     }
   },
@@ -401,18 +401,18 @@
       "Waste removal and air freshening in bedroom"
     ],
     "ground_truth": {
-      "living_room": [
-        "Check for food or drink spills on table or carpet",
-        "Check for odors from the trash bin",
-        "Check odors on the sofa and cushions",
-        "Check for rotting soil in pots or plants",
-        "Wipe contaminated surfaces and open windows for ventilation"
-      ],
       "bedroom": [
         "Check the contents of the trash bin",
         "Check for traces of food or drinks brought in",
         "Check odors on blankets and pillows",
         "Remove the source (disposal, laundry) and ventilate"
+      ],
+      "living room": [
+        "Check for food or drink spills on table or carpet",
+        "Check for odors from the trash bin",
+        "Check odors on the sofa and cushions",
+        "Check for rotting soil in pots or plants",
+        "Wipe contaminated surfaces and open windows for ventilation"
       ]
     }
   },
@@ -426,17 +426,17 @@
       "Guided relocation to optimal light source"
     ],
     "ground_truth": {
-      "living_room": [
-        "Check the status of the off lamp and other available lights",
-        "Determine if the main light is sufficient for reading",
-        "Evaluate if brightness is suitable (over 300 lux)",
-        "If selected, adjust the light angle and move to a comfortable seat"
-      ],
       "bedroom": [
         "Check the brightness of the bedroom main light",
         "Check for reading lights or stands and their brightness",
         "Check for spaces to sit and read (desk, bedside)",
         "If selected, move to the bedroom and adjust light angle"
+      ],
+      "living room": [
+        "Check the status of the off lamp and other available lights",
+        "Determine if the main light is sufficient for reading",
+        "Evaluate if brightness is suitable (over 300 lux)",
+        "If selected, adjust the light angle and move to a comfortable seat"
       ]
     }
   },
@@ -450,13 +450,6 @@
       "Sensory preparation (lighting/odor)"
     ],
     "ground_truth": {
-      "living_room": [
-        "Organize miscellaneous items on the table",
-        "Tidy cushions or the number of seats (sofa, chairs, etc.)",
-        "Clear items from the floor",
-        "Set the lighting to be bright",
-        "Prepare and set out drinks and snacks"
-      ],
       "bedroom": [
         "Tidy blankets or pillows",
         "Put personal items into drawers or closets",
@@ -466,6 +459,13 @@
         "Prioritize the messier room of the two",
         "Top priority for the living room where the guest will mainly stay",
         "Determine the cleaning level for the bedroom based on guest access"
+      ],
+      "living room": [
+        "Organize miscellaneous items on the table",
+        "Tidy cushions or the number of seats (sofa, chairs, etc.)",
+        "Clear items from the floor",
+        "Set the lighting to be bright",
+        "Prepare and set out drinks and snacks"
       ]
     }
   },
@@ -571,7 +571,7 @@
         "Hang clean towels (for cold compresses if feverish)",
         "Organize the area around the sink (for ease of use)",
         "Check and refill toilet paper",
-        "Check accessibility of tooth-brushing tools like cups after vomiting",
+        "Check accessibility of tooth-brushing tools like cups after vomiting"
       ]
     }
   },
@@ -617,7 +617,7 @@
         "Places prepared items in a shared pass-through area",
         "Broadcasts status via DDS to notify that snacks are ready"
       ],
-      "living_room": [
+      "living room": [
         "Living room agent arranges seating and adjusts lighting",
         "Receives snack status notification",
         "Retrieves snacks from the shared area without crossing the kitchen boundary"
@@ -634,17 +634,17 @@
       "Safety check (wet spots) and snack prep in kitchen"
     ],
     "ground_truth": {
-      "living_room": [
-        "Clear a large enough floor area for a yoga mat or exercise equipment",
-        "Move small furniture (e.g., footstools, coffee tables) to the perimeter to prevent injury",
-        "Ensure the TV or tablet is positioned at eye level for workout videos",
-        "Set the lighting to a bright, energetic level and ensure proper ventilation",
-      ],
       "kitchen": [
         "Fill a water bottle or pitcher and place it in an easily accessible spot",
         "Prepare a clean glass or tumbler for post-workout hydration",
         "Check for and organize healthy post-workout snacks (e.g., fruit, protein bars)",
         "Wipe any wet spots on the floor to prevent slipping during movement"
+      ],
+      "living room": [
+        "Clear a large enough floor area for a yoga mat or exercise equipment",
+        "Move small furniture (e.g., footstools, coffee tables) to the perimeter to prevent injury",
+        "Ensure the TV or tablet is positioned at eye level for workout videos",
+        "Set the lighting to a bright, energetic level and ensure proper ventilation"
       ]
     }
   },
@@ -658,11 +658,6 @@
       "Essential hygiene check in bathroom"
     ],
     "ground_truth": {
-      "living_room": [
-        "Tidy up miscellaneous items on the table and sofa",
-        "Clear items from the floor for safe movement",
-        "Set the lighting to be bright"
-      ],
       "kitchen": [
         "Complete dishwashing and organize the sink area",
         "Wipe the counter and organize visible items"
@@ -674,6 +669,11 @@
       "bathroom": [
         "Ensure clean towels are hung and soap is available",
         "Wipe water spots from the sink and mirror"
+      ],
+      "living room": [
+        "Tidy up miscellaneous items on the table and sofa",
+        "Clear items from the floor for safe movement",
+        "Set the lighting to be bright"
       ]
     }
   },
@@ -687,11 +687,6 @@
       "Accessibility and slip protection in bathroom"
     ],
     "ground_truth": {
-      "living_room": [
-        "Identify and remove small objects (coins, batteries) from the floor",
-        "Cover electrical outlets and check for sharp table corners",
-        "Set the TV to a child-safe channel or play soft music"
-      ],
       "kitchen": [
         "Move cleaning chemicals and detergents to high or locked storage",
         "Prepare child-friendly snacks and drinks"
@@ -703,6 +698,11 @@
       "bathroom": [
         "Place non-slip mats on the floor and close the toilet lid",
         "Prepare a low-height stool for handwashing"
+      ],
+      "living room": [
+        "Identify and remove small objects (coins, batteries) from the floor",
+        "Cover electrical outlets and check for sharp table corners",
+        "Set the TV to a child-safe channel or play soft music"
       ]
     }
   },
@@ -721,9 +721,9 @@
         "Take drinks out and set out cups and trays",
         "Place napkins or wet wipes"
       ],
-      "living_room": [
+      "living room": [
         "Clear the line of sight to the TV and adjust sofa cushions",
-        "Turn on indirect or mood lighting",
+        "Turn on indirect or mood lighting"
       ]
     }
   },
@@ -733,15 +733,15 @@
     "subtasks": [
       "Kitchen: Self-service station and drink prep",
       "Kitchen: Waste and cleaning capacity management",
-      "Living Room: Seating expansion and tidying",
+      "Living Room: Seating expansion and tidying"
     ],
     "ground_truth": {
       "kitchen": [
         "Clear counter space and set up a food/drink station",
         "Arrange plates, forks, or napkins for self-service",
-        "Prepare drinks and cups",
+        "Prepare drinks and cups"
       ],
-      "living_room": [
+      "living room": [
         "Check the number of seats and move extra chairs from other rooms",
         "Tidy up miscellaneous items and clear the floor",
         "Set the lighting to bright and check the speaker system"
@@ -749,26 +749,26 @@
     }
   },
   {
-  "id": "task_030",
-  "description": "Prepare the home for a long-term absence (vacation). Inspect the kitchen, bedroom to ensure all utilities are safe, windows are secured, and the security system is armed.",
-  "subtasks": [
-    "Utility and appliance safety verification in kitchen",
-    "Security and privacy setup in bedroom",
-    "Environmental and peripheral check in living room",
-    "Home-away mode transition and final report"
-  ],
-  "ground_truth": {
-    "kitchen": [
-      "Check that the stove and oven are completely turned off",
-      "Waste the food on the table and ensure the refrigerator door is tightly closed",
-      "Check for any signs of water leaks under the sink"
+    "id": "task_030",
+    "description": "Prepare the home for a long-term absence (vacation). Inspect the kitchen, bedroom to ensure all utilities are safe, windows are secured, and the security system is armed.",
+    "subtasks": [
+      "Utility and appliance safety verification in kitchen",
+      "Security and privacy setup in bedroom",
+      "Environmental and peripheral check in living room",
+      "Home-away mode transition and final report"
     ],
-    "bedroom": [
-      "Ensure all windows and blinds are fully closed and locked",
-      "Unplug electronics and chargers from outlets",
-      "Check that all closet doors and drawers are closed",
-      "Verify that the room is clear of any active electronics (e.g., humidifiers, heaters)"
-    ],
+    "ground_truth": {
+      "kitchen": [
+        "Check that the stove and oven are completely turned off",
+        "Waste the food on the table and ensure the refrigerator door is tightly closed",
+        "Check for any signs of water leaks under the sink"
+      ],
+      "bedroom": [
+        "Ensure all windows and blinds are fully closed and locked",
+        "Unplug electronics and chargers from outlets",
+        "Check that all closet doors and drawers are closed",
+        "Verify that the room is clear of any active electronics (e.g., humidifiers, heaters)"
+      ]
+    }
   }
-}
 ]
