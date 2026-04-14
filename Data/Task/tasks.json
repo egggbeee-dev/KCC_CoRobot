@@ -758,7 +758,7 @@
     "Home-away mode transition and final report"
   ],
   "ground_truth": {
-    "kitchen": 
+    "kitchen": [
       "Check that the stove and oven are completely turned off",
       "Waste the food on the table and ensure the refrigerator door is tightly closed",
       "Check for any signs of water leaks under the sink"
