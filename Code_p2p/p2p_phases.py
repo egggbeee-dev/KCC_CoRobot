@@ -283,11 +283,21 @@ EXAMPLE - kitchen agent preparing snacks for delivery:
 HANDOFF RULES:
 
 PASS - physical item delivery to room boundary:
-  CORRECT: prepare item first -> then carry to boundary -> PASS
-  WRONG: PASS on a preparation step (place, arrange, set up)
-  WRONG: PASS without depends_on pointing to your own preparation steps
-  WRONG: more than one PASS for the same item
-  -> A plan should have AT MOST 1-2 PASS steps total.
+  USE WHEN: you physically carry an item to the room boundary for the other agent.
+  VERB: "carry", "bring", "deliver", "transport" → handoff_type="PASS"
+  CORRECT: {"action":"carry snack tray to doorway","handoff_type":"PASS","target_agent":"agent_B","depends_on":[1,2]}
+  WRONG: PASS on preparation steps (place, arrange, set up, organize, receive)
+  WRONG: PASS without depends_on pointing to YOUR OWN preparation steps
+  WRONG: PASS where depends_on references the OTHER agent's steps
+
+INFORM - status/completion notification (no physical movement):
+  USE WHEN: you notify the other agent of completion without carrying anything.
+  VERB: "notify", "inform", "signal", "confirm" → handoff_type="INFORM"
+  CORRECT: {"action":"notify agent_B: snack tray is ready","handoff_type":"INFORM","target_agent":"agent_B"}
+
+KEY DISTINCTION:
+  "carry snack tray to doorway"  → PASS  (physical delivery)
+  "notify agent_B snack is ready" → INFORM (information only)
 
 TIMING:
   If you RECEIVE an item via PASS, add a receive step with
@@ -359,15 +369,22 @@ Generate your LOCAL PLAN:
 
 def _normalize_pass_steps(steps: List[PlanStep]) -> List[PlanStep]:
     """
-    Rule-based post-processing: 잘못된 PASS를 제거한다.
-
-    제거 조건:
-    1. depends_on이 비어 있음 (준비 스텝 없이 바로 PASS)
-    2. depends_on이 자기 플랜 내 step_id를 참조하지 않음
-    3. 이미 유효한 PASS와 action이 유사한 중복 PASS
+    Rule-based post-processing:
+    - 잘못된 PASS 제거
+    - INFORM인데 실제로 물리적 전달이면 PASS로 교정
     """
     my_step_ids  = {s.step_id for s in steps}
     valid_passes: List[PlanStep] = []
+
+    # 선처리: carry/bring/deliver 동사 + INFORM → PASS로 교정
+    _CARRY_VERBS = {"carry", "bring", "deliver", "transport", "move", "transfer"}
+    for s in steps:
+        if s.handoff_type == "INFORM" and s.target_agent:
+            first_word = s.action.lower().split()[0] if s.action.strip() else ""
+            if first_word in _CARRY_VERBS:
+                print(f"  [NORM] step{s.step_id} INFORM→PASS corrected: "
+                      f"action '{s.action[:40]}' is physical delivery")
+                s.handoff_type = "PASS"
 
     for s in steps:
         if s.handoff_type != "PASS":
@@ -409,6 +426,14 @@ def _normalize_pass_steps(steps: List[PlanStep]) -> List[PlanStep]:
             s.handoff_type = None
             s.target_agent = None
             continue
+
+        # 조건 2b: depends_on에 cross-agent step_id(상대 플랜)가 포함되면 제거
+        # 예: A의 carry step이 B의 step_id를 depends_on하는 역방향
+        other_step_ids = {d for d in s.depends_on if d not in my_step_ids}
+        if other_step_ids:
+            # cross-agent dep 제거 (자기 플랜 내 dep만 유지)
+            s.depends_on = [d for d in s.depends_on if d in my_step_ids]
+            print(f"  [NORM] step{s.step_id} cross-agent deps removed: {other_step_ids}")
 
         # 조건 3: 이미 유효한 PASS와 action 유사하면 중복 제거
         is_dup = any(
@@ -1489,12 +1514,19 @@ def _auto_add_pass_receivers(
     pass_steps = {s["step_id"]: s for s in steps if s.get("handoff_type") == "PASS"}
 
     # receiver 존재 여부: depends_on에서 PASS step_id를 참조하는 스텝이 있는지
+    # 또는 action에 "receive"가 포함된 스텝이 PASS 이후에 있는지
     pass_received = {
         dep
         for s in steps
         for dep in s.get("depends_on", [])
         if dep in pass_steps
     }
+    # "receive" 액션이 있으면 해당 PASS의 target_agent와 매칭
+    for s in steps:
+        if s.get("action", "").lower().startswith("receive"):
+            for sid, ps in pass_steps.items():
+                if ps.get("target_agent") == s.get("agent_id"):
+                    pass_received.add(sid)
 
     additions = []
     max_id = max((s["step_id"] for s in steps), default=0)
