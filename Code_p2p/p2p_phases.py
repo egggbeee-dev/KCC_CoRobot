@@ -1077,6 +1077,15 @@ def phase_finalize(
         # d가 old_to_new에 없는 경우(999 등)는 위에서 이미 처리했으므로 안전함
         s["depends_on"] = [old_to_new[d] for d in s.get("depends_on", []) if d in old_to_new]
         
-        # ... (Preconditions 로직 유지) ...
+        new_preconds = []
+        for p in s.get("preconditions", []):
+            m = re.match(r"step (\d+) completed", p)
+            if m and int(m.group(1)) in old_to_new:
+                new_preconds.append(f"step {old_to_new[int(m.group(1))]} completed")
+            else:
+                new_preconds.append(p)
+        s["preconditions"] = new_preconds
 
+    if verbose in ("full", "summary"):
+        print(f"\n  {len(steps_a)} A-steps + {len(steps_b)} B-steps = {len(merged)} total")
     return merged
