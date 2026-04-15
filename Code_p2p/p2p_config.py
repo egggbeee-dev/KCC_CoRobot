@@ -11,9 +11,15 @@ AUTO_HQ_ANSWER: str | None = None
 
 VALID_REASONS  = {"NO_OBJECT", "NO_CAPABILITY", "UNCERTAIN"}
 VALID_AGENTS   = {"agent_A", "agent_B"}
-
-# handoff 관련 필드 제거 — 협상은 depends_on으로만
+VALID_HANDOFFS = {"PASS", "INFORM"}
 VALID_PROPOSAL_FIELDS = {"time_min", "action", "depends_on", "delete"}
+
+# 물리적으로 전달 불가능한 키워드 (can_provide 필터링용)
+NON_PASSABLE_KW = {
+    "sink", "counter", "shelf", "surface", "floor", "wall",
+    "cleaned", "wiped", "organized", "confirmation", "confirm",
+    "status", "space", "area", "cleared", "tidied", "done",
+}
 
 FUZZY_STOPWORDS = {
     "the", "a", "an", "and", "or", "with", "on", "in", "at", "to",
