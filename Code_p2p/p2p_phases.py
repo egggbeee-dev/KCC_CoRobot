@@ -928,6 +928,11 @@ RULES:
 
 def _parse_proposals(raw: str, my_agent: str) -> List[NegotiationProposal]:
     data   = extract_json(raw)
+    # LLM이 {"proposals":[...]} 대신 [...] 를 바로 반환하는 경우 처리
+    if isinstance(data, list):
+        data = {"proposals": data}
+    if not isinstance(data, dict):
+        return []
     result = []
     for item in data.get("proposals", []):
         if not isinstance(item, dict):
