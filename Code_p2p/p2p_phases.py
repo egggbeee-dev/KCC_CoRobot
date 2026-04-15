@@ -413,78 +413,86 @@ def _inject_coordination(
         for provide in sender_offer.can_provide:
             provide_kw = _resource_keywords(provide)
 
-            # 1. receiver가 이것을 필요로 하는지 확인 (여러 방법으로)
+            # ── 1. receiver가 실제로 이 provide를 필요로 하는지 엄격히 확인 ──
             need_match = any(_fuzzy_match_soft(provide, n) for n in receiver_offer.need_from_other)
-            can_do_match = any(provide_kw & _resource_keywords(cd) for cd in receiver_offer.can_do)
-            if not need_match and not can_do_match and not provide_kw:
-                continue
+            if not need_match:
+                # 보완: provide keyword가 receiver can_do에 2개 이상 겹치는 경우만
+                strict_match = any(
+                    len(provide_kw & _resource_keywords(cd)) >= 1
+                    for cd in receiver_offer.can_do
+                )
+                if not strict_match:
+                    continue  # 관련 없으면 inject 안 함
 
-            # 2. sender 플랜에서 이 provide와 관련된 마지막 prep step 찾기
-            prep_steps = [s for s in sender_plan.steps if provide_kw & _resource_keywords(s.action)]
+            # ── 2. sender 플랜에서 관련 prep step 찾기 ──────────────────────
+            prep_steps = [s for s in sender_plan.steps
+                          if provide_kw & _resource_keywords(s.action)]
             if not prep_steps:
                 prep_steps = list(sender_plan.steps)
             if not prep_steps:
                 continue
             last_prep = max(prep_steps, key=lambda s: s.time_min)
 
-            # 3. receiver 플랜에서 연결할 스텝 찾기 (4단계 탐색)
-            candidates = [s for s in receiver_plan.steps]
-
+            # ── 3. receiver 플랜에서 연결할 스텝 찾기 ───────────────────────
             # 1단계: keyword 직접 겹침
-            targets = [s for s in candidates if provide_kw & _resource_keywords(s.action)]
+            targets = [s for s in receiver_plan.steps
+                       if provide_kw & _resource_keywords(s.action)]
 
-            # 2단계: need_from_other fuzzy match
+            # 2단계: receiver need_from_other fuzzy match
             if not targets:
-                targets = [s for s in candidates
+                targets = [s for s in receiver_plan.steps
                            if any(_fuzzy_match_soft(s.action, n)
                                   for n in receiver_offer.need_from_other)]
 
-            # 3단계: food/item 관련 배치 동사
+            # 3단계: food 키워드 + 배치 동사
             if not targets:
-                _FOOD_KW = {"snack", "food", "drink", "item", "tray", "bowl",
-                            "cup", "plate", "fruit", "bread", "water", "bottle"}
-                _PLACE_VERBS = {"place", "put", "lay", "arrange", "bring",
-                                "serve", "deliver", "receive", "set"}
+                _FOOD_KW = {"snack", "food", "drink", "tray", "bowl",
+                            "cup", "plate", "fruit", "bread", "water",
+                            "bottle", "popcorn", "soda"}
+                _PLACE_VERBS = {"place", "put", "lay", "bring",
+                                "serve", "deliver", "receive"}
                 if provide_kw & _FOOD_KW:
-                    targets = [s for s in candidates
+                    targets = [s for s in receiver_plan.steps
                                if set(re.findall(r"\w+", s.action.lower())) & _PLACE_VERBS
                                and _resource_keywords(s.action) & _FOOD_KW]
 
-            # 4단계: last_prep 이후 시간의 첫 번째 스텝
+            # fallback 제거: 관련 없는 스텝에 연결 안 함
             if not targets:
-                later = [s for s in candidates if s.time_min >= last_prep.time_min]
-                if later:
-                    targets = [min(later, key=lambda s: s.time_min)]
-
-            if not targets:
+                print(f"  [COORD] no suitable receiver step for '{provide}' — skip")
                 continue
 
-            # 4. 연결: sender의 last_prep step_id를 receiver target의 depends_on에 추가
+            # ── 4. 연결 ──────────────────────────────────────────────────────
             coord_time = last_prep.time_min
-            linked = False
             for rs in targets:
                 if last_prep.step_id in rs.depends_on:
-                    linked = True
                     continue
                 rs.depends_on = sorted(set(rs.depends_on + [last_prep.step_id]))
                 if rs.time_min <= coord_time:
                     rs.time_min = coord_time + 1
                 print(f"  [COORD] {receiver_id} step{rs.step_id} "
-                      f"'{rs.action[:45]}'\n"
-                      f"          ← depends on {sender_id} step{last_prep.step_id} "
-                      f"'{last_prep.action[:35]}' (T={rs.time_min}m)")
-                linked = True
+                      f"'{rs.action[:45]}'")
+                print(f"          ← {sender_id} step{last_prep.step_id} "
+                      f"'{last_prep.action[:40]}' (T={rs.time_min}m)")
 
         return sender_plan, receiver_plan
-
     # A→B
     plan_a, plan_b = _inject_one_direction(
         plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B"
     )
-    # B→A (A가 필요한 것을 B가 제공하는 경우)
-    plan_b, plan_a = _inject_one_direction(
-        plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A"
+    # B→A: A의 need_from_other가 물리적 아이템이 아닌 경우 inject 스킵
+    # "confirmation", "confirm", "clear", "ready", "status" → 정보성, inject 불필요
+    _INFO_KW = {"confirmation", "confirm", "clear", "ready", "status",
+                "notify", "check", "verified", "done", "complete"}
+    a_needs_physical = any(
+        not (_resource_keywords(n) & _INFO_KW)
+        for n in offer_a.need_from_other
     )
+    if a_needs_physical:
+        plan_b, plan_a = _inject_one_direction(
+            plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A"
+        )
+    else:
+        print(f"  [COORD] B→A skipped: A only needs confirmation-type info")
     return plan_a, plan_b
 
 
