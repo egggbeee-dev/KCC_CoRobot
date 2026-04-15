@@ -56,7 +56,7 @@ def _print_summary(results: List[Dict]) -> None:
         conv = r.get("convergence", {})
         print(
             f"  {r['label']:<22} "
-            f"{m.get('conflicts_before', 0):>6} "
+            f"{m.get('conflicts', 0):>6} "
             f"{m.get('conflict_reduction', 0.0):>7.3f} "
             f"{'Y' if conv.get('converged') else 'N':>5} "
             f"{m.get('negotiation_rounds', 0):>4} "
