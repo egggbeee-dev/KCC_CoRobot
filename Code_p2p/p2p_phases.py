@@ -415,7 +415,8 @@ def _parse_local_plan(
 
     handoffs = [
         Handoff(s.step_id, s.action, s.handoff_type, s.target_agent,
-                s.notes if s.handoff_type == "INFORM" else "")
+                s.notes if s.handoff_type == "INFORM" else "",
+                my.agent_id)
         for s in steps if s.handoff_type
     ]
 
@@ -536,7 +537,7 @@ def _ensure_pass(
         sender.steps.append(pass_step)
         sender.steps.sort(key=lambda s: (s.time_min, s.step_id))
         sender.handoffs.append(
-            Handoff(new_sid, pass_step.action, "PASS", rid, "")
+            Handoff(new_sid, pass_step.action, "PASS", rid, "", sid)
         )
         print(f"  [ENSURE] {sid}: PASS step{new_sid} injected "
               f"(T={pass_time}m) '{provide}' → {rid}")
@@ -630,8 +631,17 @@ def _ensure_pass(
 
     # A→B
     plan_a, plan_b = _inject(plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B")
-    # B→A (B가 A에게 물리적으로 전달할 게 있는 경우만)
-    plan_b, plan_a = _inject(plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A")
+    # B→A: A의 need_from_other가 물리적 아이템인 경우만
+    _INFO_KW = {"confirmation","confirm","clear","ready","status",
+                "notify","check","verified","done","complete","that"}
+    a_needs_physical = any(
+        not (_kw(n) & _INFO_KW)
+        for n in offer_a.need_from_other
+    )
+    if a_needs_physical:
+        plan_b, plan_a = _inject(plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A")
+    else:
+        print(f"  [ENSURE] B→A skipped: A only needs confirmation-type info")
     return plan_a, plan_b
 
 
