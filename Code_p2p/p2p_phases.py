@@ -578,9 +578,16 @@ def detect_conflicts_from_dicts(steps_a: List[Dict], steps_b: List[Dict], offer_
     """
     협상 중에 사전(dict) 형태의 플랜 데이터를 받아 갈등을 체크하기 위한 브릿지 함수
     """
-    # PlanStep 객체로 복원하여 기존 detect_conflicts 호출
-    tmp_a = LocalPlan("agent_A", [PlanStep(**s) for s in steps_a], 0.0, [])
-    tmp_b = LocalPlan("agent_B", [PlanStep(**s) for s in steps_b], 0.0, [])
+    # PlanStep 필드에 없는 키 제거 후 변환 (호환성 처리)
+    _VALID_FIELDS = {"step_id","time_min","room","agent_id","action",
+                     "preconditions","depends_on","uncertainty","notes"}
+    def _to_step(d: Dict) -> PlanStep:
+        clean = {k: v for k, v in d.items() if k in _VALID_FIELDS}
+        # 999 플레이스홀더 유지 (Phase 4에서 교체됨)
+        return PlanStep(**clean)
+
+    tmp_a = LocalPlan("agent_A", [_to_step(s) for s in steps_a], 0.0, [])
+    tmp_b = LocalPlan("agent_B", [_to_step(s) for s in steps_b], 0.0, [])
     return detect_conflicts(tmp_a, tmp_b, offer_a, offer_b)
     
 
@@ -839,6 +846,8 @@ def _has_cycle(steps: List[Dict]) -> bool:
     adj: Dict[int, List[int]] = {s["step_id"]: [] for s in steps}
     for s in steps:
         for dep in s.get("depends_on", []):
+            if dep == 999:
+                continue  # 999는 미해결 플레이스홀더, cycle 탐지에서 제외
             if dep in adj:
                 adj[dep].append(s["step_id"])
                 indegree[s["step_id"]] += 1
@@ -865,10 +874,25 @@ def phase5_convergence_check(
     # 1. Dependency Cycle 체크 (기존 유지)
     no_cycle = not _has_cycle(all_steps)
 
-    # 2. Observability 체크 (기존 유지)
-    # ... (기존 obs_ok 로직) ...
+    # 2. Observability 체크
+    scope_a   = set(re.findall(r"\w+", offer_a.obs_scope.lower()))
+    scope_b   = set(re.findall(r"\w+", offer_b.obs_scope.lower()))
+    can_kw_a: Set[str] = set()
+    can_kw_b: Set[str] = set()
+    for cd in offer_a.can_do:
+        can_kw_a |= _resource_keywords(cd)
+    for cd in offer_b.can_do:
+        can_kw_b |= _resource_keywords(cd)
 
-    # 3. [추가/수정] Placeholder & Dependency 체크
+    obs_ok = True
+    for s in all_steps:
+        pool = (can_kw_a | scope_a) if s.get("agent_id") == "agent_A" else (can_kw_b | scope_b)
+        kw   = _resource_keywords(s.get("action", ""))
+        if kw and pool and not (kw & pool):
+            obs_ok = False
+            break
+
+    # 3. Placeholder & Dependency 체크
     # 아직 [999]가 남아있거나, 필요한 의존성이 비어있는지 확인합니다.
     missing_deps: List[int] = []
     has_placeholder: List[int] = []
