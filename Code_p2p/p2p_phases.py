@@ -164,6 +164,10 @@ RULES:
 
 def _parse_offer(raw: str, agent_id: str) -> Offer:
     data = extract_json(raw)
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        data = {}
 
     cannot_do: List[CannotEntry] = []
     uncertain_count = 0
@@ -341,7 +345,12 @@ Generate YOUR local plan:
 def _parse_local_plan(
     raw: str, log_probs: List[float], my: Offer, step_offset: int = 0,
 ) -> LocalPlan:
-    data      = extract_json(raw)
+    data = extract_json(raw)
+    if isinstance(data, list):
+        # LLM이 plan_steps 배열을 바로 반환한 경우
+        data = {"plan_steps": data}
+    if not isinstance(data, dict):
+        data = {}
     raw_steps = data.get("plan_steps", [])
     if not isinstance(raw_steps, list):
         raw_steps = []
