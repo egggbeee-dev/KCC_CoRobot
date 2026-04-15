@@ -206,11 +206,7 @@ def _parse_offer(raw: str, agent_id: str) -> Offer:
 
     # can_provide: 물리적으로 전달 가능한 아이템만 허용
     raw_provides = [str(x).strip() for x in data.get("can_provide", []) if str(x).strip()]
-    can_provide = [
-    p for p in raw_provides
-    if _is_passable(p)
-    and _kw(p) & (_kw(obs_scope) | set(re.findall(r"\w+", obs_scope.lower())))
-]
+    can_provide  = [p for p in raw_provides if _is_passable(p)]
     filtered     = [p for p in raw_provides if not _is_passable(p)]
     if filtered:
         print(f"  [OFFER] non-passable items filtered from can_provide: {filtered}")
@@ -974,11 +970,9 @@ def _apply_proposal(
     if prop.step_id not in sid_map:
         return False
     idx = sid_map[prop.step_id]
-    
-    # 변경 후 — REDUNDANCY delete는 즉시 적용 (ACCEPT 불필요)
+
     if prop.field == "delete":
-        plan.pop(idx)
-        return True
+        plan.pop(idx); return True
     if prop.field == "time_min":
         t = safe_int(prop.new_value, -1)
         if 0 <= t <= 30:
@@ -1010,7 +1004,7 @@ def _lock_steps(
     agreed     = (prop_a & acc_b) | (prop_b & acc_a)
     mentioned  = {p.step_id for p in props_a + props_b}
     uncontested = conflict_sids - mentioned
-    return existing | agreed
+    return existing | agreed | uncontested
 
 
 def phase4_negotiation(
@@ -1347,50 +1341,123 @@ def phase_finalize(
 # OUTPUT FORMAT (자연어, 깔끔한 출력)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def format_joint_plan(plan: List[Dict]) -> str:
-    """Joint plan을 사람이 읽기 좋은 자연어로 출력."""
+def format_joint_plan(plan: List[Dict], task: str = "") -> str:
+    """
+    Joint plan을 타임라인 형식으로 출력.
+    두 에이전트를 나란히 보여주고 PASS/INFORM을 화살표로 명시.
+    """
     if not plan:
         return "  (empty)"
 
+    steps_a = sorted([s for s in plan if s.get("agent_id") == "agent_A"],
+                     key=lambda s: s.get("time_min", 0))
+    steps_b = sorted([s for s in plan if s.get("agent_id") == "agent_B"],
+                     key=lambda s: s.get("time_min", 0))
+
+    room_a = steps_a[0].get("room", "agent_A") if steps_a else "agent_A"
+    room_b = steps_b[0].get("room", "agent_B") if steps_b else "agent_B"
+
     id_to_step: Dict[int, Dict] = {s["step_id"]: s for s in plan}
+    W   = 36
+    SEP = "━" * (W * 2 + 7)
 
-    lines = []
-    for s in plan:
-        sid      = s["step_id"]
-        t        = s.get("time_min", 0)
-        room     = s.get("room", "?")
-        agent    = s.get("agent_id", "?")
-        action   = s.get("action", "")
-        handoff  = s.get("handoff_type")
-        target   = s.get("target_agent", "")
-        deps     = s.get("depends_on", [])
-        notes    = s.get("notes", "")
+    n_pass   = sum(1 for s in plan if s.get("handoff_type") == "PASS")
+    n_inform = sum(1 for s in plan if s.get("handoff_type") == "INFORM")
+    max_t    = max((s.get("time_min", 0) for s in plan), default=0)
 
-        # 핵심 라인
-        line = f"  {sid:>2}. [T={t:>2}m] [{room:<12}] [{agent}]  {action}"
+    def _short(text: str, w: int) -> str:
+        return text if len(text) <= w else text[:w - 1] + "…"
 
-        # handoff 표시: 자연어로
-        if handoff == "PASS":
-            line += f"  →→ PASS to {target}"
-        elif handoff == "INFORM":
-            line += f"  →→ NOTIFY {target}"
+    def _room_label(room: str, agent: str) -> str:
+        r = room.upper()
+        return f"[{r} — {agent}]"
 
-        # depends_on: 자연어로
-        if deps:
-            dep_labels = []
-            for d in deps:
-                dep_step = id_to_step.get(d)
-                if dep_step:
-                    dep_action = dep_step["action"]
-                    short = dep_action[:38] + ("…" if len(dep_action) > 38 else "")
-                    dep_agent = dep_step.get("agent_id", "?")
-                    same = dep_agent == agent
-                    label = f'"{short}"' if same else f'[{dep_agent}] "{short}"'
-                    dep_labels.append(label)
+    lines: List[str] = []
+    lines.append(SEP)
+    title = f"  JOINT PLAN — {_short(task, 55)}" if task else "  JOINT PLAN"
+    lines.append(title)
+    lines.append(f"  {len(plan)} steps | {n_pass} handoff(s) | {n_inform} notify | Est. {max_t}+ min")
+    lines.append(SEP)
+    lines.append(f"  {_room_label(room_a, 'agent_A'):<{W}}   {_room_label(room_b, 'agent_B')}")
+    lines.append(f"  {'─' * W}   {'─' * W}")
+
+    all_times = sorted({s.get("time_min", 0) for s in plan})
+
+    for t in all_times:
+        slot_a = [s for s in steps_a if s.get("time_min") == t]
+        slot_b = [s for s in steps_b if s.get("time_min") == t]
+        max_rows = max(len(slot_a), len(slot_b), 1)
+
+        for row in range(max_rows):
+            sa = slot_a[row] if row < len(slot_a) else None
+            sb = slot_b[row] if row < len(slot_b) else None
+
+            t_label = f"T={t:>2}m" if row == 0 else "     "
+
+            # A 컬럼
+            if sa:
+                ht_a = sa.get("handoff_type")
+                act_a = _short(sa.get("action", ""), W - 10)
+                if ht_a == "PASS":
+                    col_a = f"{t_label}  ──PASS──► {act_a}"
+                elif ht_a == "INFORM":
+                    col_a = f"{t_label}  ~~NOTIFY► {act_a}"
                 else:
-                    dep_labels.append(f"step {d}")
-            line += f"\n      ⤷ after: {', '.join(dep_labels)}"
+                    cross = any(
+                        id_to_step.get(d, {}).get("agent_id") == "agent_B"
+                        for d in sa.get("depends_on", [])
+                    )
+                    dep = " ◄[B]" if cross else ""
+                    col_a = f"{t_label}  {_short(sa.get('action',''), W - 7)}{dep}"
+            else:
+                col_a = ""
 
-        lines.append(line)
+            # B 컬럼
+            if sb:
+                ht_b = sb.get("handoff_type")
+                act_b = _short(sb.get("action", ""), W - 10)
+                if ht_b == "PASS":
+                    col_b = f"◄──PASS──  {act_b}"
+                elif ht_b == "INFORM":
+                    col_b = f"◄~~NOTIFY  {act_b}"
+                else:
+                    cross = any(
+                        id_to_step.get(d, {}).get("agent_id") == "agent_A"
+                        for d in sb.get("depends_on", [])
+                    )
+                    dep = "◄[A] " if cross else ""
+                    col_b = f"{dep}{_short(sb.get('action',''), W - 6)}"
+            else:
+                col_b = ""
+
+            lines.append(f"  {col_a:<{W}}   {col_b}")
+
+    lines.append(SEP)
+
+    # COORDINATION SUMMARY
+    coord: List[str] = []
+    for s in sorted(plan, key=lambda x: x.get("time_min", 0)):
+        ht  = s.get("handoff_type")
+        if not ht:
+            continue
+        src = s.get("agent_id", "?")
+        tgt = s.get("target_agent", "?")
+        t   = s.get("time_min", 0)
+        act = _short(s.get("action", ""), 45)
+        receivers = [
+            r for r in plan
+            if s["step_id"] in r.get("depends_on", [])
+            and r.get("agent_id") != src
+        ]
+        if ht == "PASS":
+            recv_t = receivers[0].get("time_min", t + 1) if receivers else t + 1
+            coord.append(f"  • {src} ──[PASS]──► {tgt}  '{act}'  (T={t}m → T={recv_t}m)")
+        elif ht == "INFORM":
+            coord.append(f"  • {src} ~~[NOTIFY]~~► {tgt}  '{act}'  (T={t}m)")
+
+    if coord:
+        lines.append("  COORDINATION SUMMARY")
+        lines.extend(coord)
+        lines.append(SEP)
 
     return "\n".join(lines)
