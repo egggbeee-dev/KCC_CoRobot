@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from p2p_phases import (
+    format_joint_plan,
     local_plan_to_dict,
     offer_to_dict,
     phase1_offer,
@@ -33,10 +34,11 @@ from p2p_phases import (
     phase4_negotiation,
     phase5_convergence_check,
     phase6_human_query,
-    phase_finalize, plan_steps_to_dicts,
+    phase_finalize,
+    plan_steps_to_dicts,
+    _kw,
 )
 from p2p_utils import _banner, jdump
-from p2p_phases import format_joint_plan
 
 _BASE      = Path(__file__).parent.parent
 TASKS_PATH = _BASE / "Data" / "Task" / "tasks.json"
@@ -70,15 +72,15 @@ def get_task(task_id: str) -> str:
 
 
 def run(
-    task_id:           Optional[str] = None,
-    img_a:             Optional[str] = None,
-    img_b:             Optional[str] = None,
-    use_offer:         bool          = True,
-    use_handoff:       bool          = True,
-    use_human_query:   bool          = True,
-    use_negotiation:   bool          = True,
-    label:             Optional[str] = None,
-    verbose:           str           = "full",
+    task_id:         Optional[str] = None,
+    img_a:           Optional[str] = None,
+    img_b:           Optional[str] = None,
+    use_offer:       bool = True,
+    use_negotiation: bool = True,
+    use_human_query: bool = True,
+    use_handoff:     bool = True,   # 하위 호환성 유지 (내부적으로 무시됨)
+    label:           Optional[str] = None,
+    verbose:         str  = "full",
 ) -> Dict:
     """
     P2P Collaborative VLM Planning 전체 파이프라인.
@@ -124,33 +126,31 @@ def run(
     # ── Phase 2 ──────────────────────────────────────────────────────────────
     plan_a, plan_b = phase2_local_plan(
         offer_a, offer_b, img_a, img_b, task,
-        use_offer=use_offer,
- verbose=verbose,
+        use_offer=use_offer, verbose=verbose,
     )
 
     # conflicts before negotiation (논문 메트릭용)
-    conflicts_before = phase3_conflict_detection(plan_a, plan_b, offer_a, offer_b, verbose=verbose)
-    n_conflicts_before = len(conflicts_before)
+    conflicts = phase3_conflict_detection(plan_a, plan_b, offer_a, offer_b, verbose=verbose)
+    n_conflicts = len(conflicts)
 
     # ── Phase 4 ──────────────────────────────────────────────────────────────
     if use_negotiation:
         neg_steps_a, neg_steps_b, neg_rounds = phase4_negotiation(
-            plan_a, plan_b, offer_a, offer_b, conflicts_before,
-            img_a, img_b, task,
- verbose=verbose,
+            plan_a, plan_b, offer_a, offer_b, conflicts,
+            img_a, img_b, task, verbose=verbose,
         )
     else:
         _banner("PHASE 4 — P2P NEGOTIATION")
         print("  [ABLATION] Negotiation disabled.")
-        neg_steps_a = [asdict(s) for s in plan_a.steps]
-        neg_steps_b = [asdict(s) for s in plan_b.steps]
+        neg_steps_a = plan_steps_to_dicts(plan_a.steps)
+        neg_steps_b = plan_steps_to_dicts(plan_b.steps)
         neg_rounds  = []
 
     # ── Phase 5 ──────────────────────────────────────────────────────────────
     # Phase 5용 conflict list: 협상 후 재탐지가 이상적이지만
     # 비용 절감을 위해 원래 conflicts를 넘기고 수렴 조건만 rule-based로 판단
     convergence = phase5_convergence_check(
-        neg_steps_a, neg_steps_b, offer_a, offer_b, conflicts_before,
+        neg_steps_a, neg_steps_b, offer_a, offer_b, conflicts,
     )
 
     # ── Phase 6 ──────────────────────────────────────────────────────────────
@@ -171,24 +171,26 @@ def run(
     # ── 논문 메트릭 계산 ──────────────────────────────────────────────────────
     # conflict_reduction: 협상 전후 conflict 수 감소율
     conflict_reduction = (
-        (n_conflicts_before - convergence.unresolved_conflicts.__len__()) / max(n_conflicts_before, 1)
+        (n_conflicts - convergence.unresolved_conflicts.__len__()) / max(n_conflicts, 1)
     )
 
     # observability: 각 step이 자기 obs_scope 내에 있는 비율
-    scope_a = set(__import__("re").findall(r"\w+", offer_a.obs_scope.lower()))
-    scope_b = set(__import__("re").findall(r"\w+", offer_b.obs_scope.lower()))
-    from p2p_phases import _resource_keywords
+    scope_a = set(re.findall(r"\w+", offer_a.obs_scope.lower()))
+    scope_b = set(re.findall(r"\w+", offer_b.obs_scope.lower()))
+    can_kw_a: set = set()
+    can_kw_b: set = set()
+    for cd in offer_a.can_do: can_kw_a |= _kw(cd)
+    for cd in offer_b.can_do: can_kw_b |= _kw(cd)
+
     obs_violations = 0
     for s in joint:
-        if s.get("action", "").lower().startswith(("inform", "receive")):
-            continue
         if s.get("handoff_type") == "PASS":
             continue
-        scope = scope_a if s.get("agent_id") == "agent_A" else scope_b
-        kw    = _resource_keywords(s.get("action", ""))
-        if kw and scope and not (kw & scope):
+        pool = (can_kw_a | scope_a) if s.get("agent_id") == "agent_A" else (can_kw_b | scope_b)
+        kw   = _kw(s.get("action", ""))
+        if kw and pool and not (kw & pool):
             obs_violations += 1
-    observability_rate = max(0.0, 1.0 - obs_violations / max(len(joint), 1))
+    observability_rate = round(1.0 - obs_violations / max(len(joint), 1), 3)
 
     # PASS 매칭률
     pass_steps    = {s["step_id"] for s in joint if s.get("handoff_type") == "PASS"}
@@ -197,7 +199,7 @@ def run(
     handoff_match = matched_pass / max(len(pass_steps), 1) if pass_steps else 1.0
 
     metrics = {
-        "conflicts_before":    n_conflicts_before,
+        "conflicts":    n_conflicts,
         "conflicts_after":     len(convergence.unresolved_conflicts),
         "conflict_reduction":  round(conflict_reduction, 3),
         "convergence_rate":    1.0 if convergence.converged else 0.0,
@@ -239,7 +241,7 @@ def run(
             "agent_A": local_plan_to_dict(plan_a),
             "agent_B": local_plan_to_dict(plan_b),
         },
-        "conflicts_before": [asdict(c) for c in conflicts_before],
+        "conflicts": [asdict(c) for c in conflicts],
         "negotiation": {
             "rounds": len(neg_rounds),
             "history": [
@@ -254,7 +256,7 @@ def run(
         },
         "convergence": {
             "converged":        convergence.converged,
-            "pass_matched":     convergence.pass_matched,
+            "no_missing_deps":  convergence.no_missing_deps,
             "no_dep_cycle":     convergence.no_dep_cycle,
             "observability_ok": convergence.observability_ok,
             "unresolved":       len(convergence.unresolved_conflicts),
