@@ -193,6 +193,15 @@ def run(
             obs_violations += 1
     observability_rate = round(1.0 - obs_violations / max(len(joint), 1), 3)
 
+
+    # cross-agent depends_on 수
+    id_to_agent = {s["step_id"]: s.get("agent_id") for s in joint}
+    cross_deps  = sum(
+        1 for s in joint
+        for d in s.get("depends_on", [])
+        if id_to_agent.get(d) and id_to_agent[d] != s.get("agent_id")
+    )
+
     # PASS 매칭률
     pass_steps    = {s["step_id"] for s in joint if s.get("handoff_type") == "PASS"}
     all_deps      = {d for s in joint for d in s.get("depends_on", [])}
