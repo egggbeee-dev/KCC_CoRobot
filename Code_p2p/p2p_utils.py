@@ -8,7 +8,7 @@ import math
 import re
 from typing import Any, Dict, List, Optional
 
-from p2p_config import FUZZY_STOPWORDS, VALID_AGENTS, VALID_REASONS
+from p2p_config import FUZZY_STOPWORDS, VALID_AGENTS, VALID_HANDOFFS, VALID_REASONS
 
 
 # ── 타입 변환 헬퍼 ─────────────────────────────────────────────────────────────
@@ -38,6 +38,11 @@ def _norm_reason(r: Any) -> str:
     return s if s in VALID_REASONS else "UNCERTAIN"
 
 
+def _norm_handoff(x: Any) -> Optional[str]:
+    if x is None:
+        return None
+    s = str(x).strip().upper()
+    return s if s in VALID_HANDOFFS else None
 
 
 def _norm_agent(x: Any) -> Optional[str]:
@@ -192,28 +197,16 @@ def compute_plan_uncertainty(step_uncertainties: List[float]) -> float:
 # ── 출력 헬퍼 (verifier 제거 후 여기로 이동) ──────────────────────────────────
 
 def format_joint_plan(plan: List[Dict]) -> str:
-    """Joint plan을 읽기 좋은 형태로 출력 (depends_on을 자연어로)."""
+    """Joint plan을 읽기 좋은 형태로 출력."""
     if not plan:
         return "  (empty)"
-
-    id_to_action: Dict[int, str] = {s["step_id"]: s["action"] for s in plan}
-
-    def _dep_text(dep_ids: List[int]) -> str:
-        if not dep_ids:
-            return ""
-        labels = []
-        for did in dep_ids:
-            act = id_to_action.get(did, f"step {did}")
-            labels.append(f'"{act[:38]}{"..." if len(act) > 38 else ""}')
-        return " ← after: " + ", ".join(labels)
-
     lines = []
-    for s in sorted(plan, key=lambda x: (x.get("time_min", 0), x.get("step_id", 0))):
-        dep_str  = _dep_text(s.get("depends_on", []))
-        raw_note = s.get("notes", "")
-        note     = f" ({raw_note})" if raw_note and "[COORD]" not in raw_note else ""
+    for s in plan:
+        dep  = f" deps={s['depends_on']}" if s.get("depends_on") else ""
+        hoff = f" [{s['handoff_type']}→{s['target_agent']}]" if s.get("handoff_type") else ""
+        note = f" ({s['notes']})" if s.get("notes") else ""
         lines.append(
-            f"  {s['step_id']:>2}. [T={s['time_min']:>2}m] [{s.get('room','?'):<12}] "
-            f"[{s.get('agent_id','?')}]  {s['action']}{note}{dep_str}"
+            f"  {s['step_id']:>2}. [T={s['time_min']:>2}m] [{s['room']:<12}] [{s['agent_id']}]  "
+            f"{s['action']}{hoff}{dep}{note}"
         )
     return "\n".join(lines)
