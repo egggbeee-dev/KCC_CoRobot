@@ -206,7 +206,11 @@ def _parse_offer(raw: str, agent_id: str) -> Offer:
 
     # can_provide: 물리적으로 전달 가능한 아이템만 허용
     raw_provides = [str(x).strip() for x in data.get("can_provide", []) if str(x).strip()]
-    can_provide  = [p for p in raw_provides if _is_passable(p)]
+    can_provide = [
+    p for p in raw_provides
+    if _is_passable(p)
+    and _kw(p) & (_kw(obs_scope) | set(re.findall(r"\w+", obs_scope.lower())))
+]
     filtered     = [p for p in raw_provides if not _is_passable(p)]
     if filtered:
         print(f"  [OFFER] non-passable items filtered from can_provide: {filtered}")
@@ -970,9 +974,11 @@ def _apply_proposal(
     if prop.step_id not in sid_map:
         return False
     idx = sid_map[prop.step_id]
-
+    
+    # 변경 후 — REDUNDANCY delete는 즉시 적용 (ACCEPT 불필요)
     if prop.field == "delete":
-        plan.pop(idx); return True
+        plan.pop(idx)
+        return True
     if prop.field == "time_min":
         t = safe_int(prop.new_value, -1)
         if 0 <= t <= 30:
@@ -1004,7 +1010,7 @@ def _lock_steps(
     agreed     = (prop_a & acc_b) | (prop_b & acc_a)
     mentioned  = {p.step_id for p in props_a + props_b}
     uncontested = conflict_sids - mentioned
-    return existing | agreed | uncontested
+    return existing | agreed
 
 
 def phase4_negotiation(
