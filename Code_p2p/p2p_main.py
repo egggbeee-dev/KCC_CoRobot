@@ -225,7 +225,7 @@ def run(
     print("\n" + "█" * 68)
     print(f"  FINAL JOINT PLAN — {label}")
     print("█" * 68)
-    print(format_joint_plan(joint))
+    print(format_joint_plan(joint,task))
 
     print(f"\n  METRICS")
     print(f"  {'─'*40}")
