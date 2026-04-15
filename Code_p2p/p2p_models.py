@@ -1,6 +1,4 @@
 # models.py
-# PASS/INFORM/handoff 완전 제거.
-# 에이전트 간 협력은 depends_on으로만 표현한다.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -22,8 +20,8 @@ class Offer:
     can_do:          List[str]
     cannot_do:       List[CannotEntry]
     conf:            Dict[str, float]
-    can_provide:     List[str]   # 상대에게 제공 가능한 결과물/정보
-    need_from_other: List[str]   # 상대로부터 필요한 것
+    can_provide:     List[str]   # 물리적으로 전달 가능한 아이템만
+    need_from_other: List[str]
     uncertain_count: int = 0
 
 
@@ -41,10 +39,12 @@ class PlanStep:
     room:          str
     agent_id:      str
     action:        str
-    preconditions: List[str] = field(default_factory=list)
-    depends_on:    List[int] = field(default_factory=list)
-    uncertainty:   float     = 0.0
-    notes:         str       = ""
+    preconditions: List[str]     = field(default_factory=list)
+    depends_on:    List[int]     = field(default_factory=list)
+    handoff_type:  Optional[str] = None   # "PASS" | "INFORM" | None
+    target_agent:  Optional[str] = None
+    uncertainty:   float         = 0.0
+    notes:         str           = ""
 
 
 @dataclass
@@ -53,14 +53,25 @@ class LocalPlan:
     steps:    List[PlanStep]
     U_plan:   float
     hq_list:  List[HQEntry]
+    handoffs: List["Handoff"]
+
+
+@dataclass
+class Handoff:
+    step_id:      int
+    action:       str
+    handoff_type: str            # "PASS" | "INFORM"
+    target_agent: Optional[str]
+    payload:      str = ""
 
 
 class ConflictType:
-    TEMPORAL    = "TEMPORAL"
-    DEPENDENCY  = "DEPENDENCY"
-    REDUNDANCY  = "REDUNDANCY"
-    CANNOT_DO   = "CANNOT_DO"
-    OBSERV      = "OBSERVABILITY"
+    TEMPORAL   = "TEMPORAL"
+    DEPENDENCY = "DEPENDENCY"
+    REDUNDANCY = "REDUNDANCY"
+    CANNOT_DO  = "CANNOT_DO"
+    OBSERV     = "OBSERVABILITY"
+    HANDOFF    = "HANDOFF"
 
 
 @dataclass
