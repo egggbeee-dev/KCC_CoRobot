@@ -63,6 +63,7 @@ class Handoff:
     handoff_type: str            # "PASS" | "INFORM"
     target_agent: Optional[str]
     payload:      str = ""
+    agent_id:     str = ""
 
 
 class ConflictType:
