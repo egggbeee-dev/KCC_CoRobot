@@ -92,10 +92,12 @@ def _is_passable(item: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PHASE 1: OBSERVATION & OFFER GENERATION
+# PHASE 1a: OBSERVATION (이미지 기반 capability 선언)
+# Phase 1b: COORDINATION INTENT (상대방 offer를 보고 can_provide/need 결정)
 # ══════════════════════════════════════════════════════════════════════════════
 
-_P1_EXAMPLE = """
+# ── Phase 1a 프롬프트: 이미지만 보고 capability 선언 ─────────────────────────
+_P1A_EXAMPLE = """
 EXAMPLE — kitchen agent, task "prepare movie night":
 <JSON>
 {
@@ -111,7 +113,7 @@ EXAMPLE — kitchen agent, task "prepare movie night":
   ],
   "cannot_do": [
     {"action": "arrange living room seating", "reason": "NO_OBJECT"},
-    {"action": "adjust TV lighting", "reason": "NO_OBJECT"}
+    {"action": "adjust TV settings", "reason": "NO_OBJECT"}
   ],
   "conf": {
     "place apple and orange from island onto serving tray": 0.9,
@@ -119,53 +121,82 @@ EXAMPLE — kitchen agent, task "prepare movie night":
     "fill water glass from tap": 0.9,
     "wipe counter surface with cloth": 0.95,
     "clean visible sink with sponge": 0.9
-  },
-  "can_provide": ["snack tray with fruits and bread"],
-  "need_from_other": ["living room table cleared for snacks"]
+  }
 }
 </JSON>
 """.strip()
 
 
-def _build_phase1_prompt(task: str) -> str:
-    return f"""You are an embodied home agent observing your room.
+def _build_phase1a_prompt(task: str) -> str:
+    return f"""You are an embodied home agent observing your room image.
 
 Global task: "{task}"
 
-{_P1_EXAMPLE}
+{_P1A_EXAMPLE}
 
-Generate your Offer for YOUR room only. Be faithful to what is actually visible.
+Observe YOUR room and declare your capabilities. Be faithful to what is visible.
 
 RULES:
-1. can_do: max {MAX_CAN_DO} actions using ONLY visible objects.
+1. can_do: max {MAX_CAN_DO} actions using ONLY objects visible in your image.
    - Prioritize actions that DIRECTLY contribute to the global task.
-   - Format: "verb + specific visible object + purpose"
+   - Format: "verb + specific visible object"
 2. cannot_do: max {MAX_CANNOT_DO}. reason: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
 3. conf: confidence [0.0–1.0] per can_do item.
-4. can_provide: items you can PHYSICALLY CARRY to the room boundary for the other agent.
-   - ONLY tangible objects: food tray, drink, meal, document, tool
-   - NOT: "cleaned sink", "confirmation", "status", "organized shelf"
-   - Keep to 1–2 items maximum. Only what the OTHER agent actually needs.
-5. need_from_other: 1–2 things you genuinely need from the other agent to complete the task.
-   Focus on physical items or critical information, not generic confirmations.
-6. Think about COLLABORATION: what can you prepare that helps the other agent?
-7. Return ONLY valid JSON inside <JSON> tags.
+4. Do NOT include can_provide or need_from_other here. That comes later.
+5. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
   "room_type": "...",
-  "observation": "one concise sentence describing the room",
-  "obs_scope": "comma-separated list of visible objects and areas",
-  "can_do": ["verb + specific object + purpose"],
+  "observation": "one concise sentence",
+  "obs_scope": "comma-separated visible objects and areas",
+  "can_do": ["verb + specific object"],
   "cannot_do": [{{"action": "...", "reason": "NO_OBJECT"}}],
-  "conf": {{"action text": 0.9}},
-  "can_provide": ["max 2 tangible items for the other agent"],
-  "need_from_other": ["max 2 specific needs"]
+  "conf": {{"action": 0.9}}
 }}
 </JSON>"""
 
 
-def _parse_offer(raw: str, agent_id: str) -> Offer:
+# ── Phase 1b 프롬프트: 상대방 offer를 보고 coordination intent 결정 ───────────
+def _build_phase1b_prompt(my: "Offer", other: "Offer", task: str) -> str:
+    return f"""You are the {my.room_type} agent ({my.agent_id}).
+Global task: "{task}"
+
+YOUR capabilities:
+- room: {my.room_type}
+- can_do: {json.dumps(my.can_do, ensure_ascii=False)}
+
+OTHER agent ({other.room_type}, {other.agent_id}) capabilities:
+- can_do: {json.dumps(other.can_do, ensure_ascii=False)}
+
+Now decide COORDINATION INTENT:
+
+QUESTION 1 — can_provide:
+  "Is there anything I can PHYSICALLY CARRY to the room boundary
+   that the other agent needs to complete THEIR part of the task?"
+  Think: Does their job require something I can prepare?
+  - If YES: list the item (max 1-2, tangible objects only)
+  - If NO: write []
+  - NOT passable: furniture, electronics, room conditions, status confirmations
+
+QUESTION 2 — need_from_other:
+  "Is there anything the other agent can provide that I need
+   to complete MY part of the task?"
+  - If YES: list it specifically (max 1-2)
+  - If NO: write []
+
+Return ONLY valid JSON inside <JSON> tags.
+
+<JSON>
+{{
+  "can_provide": ["item you will carry to boundary for the other agent"],
+  "need_from_other": ["item or service you need from the other agent"]
+}}
+</JSON>"""
+
+
+def _parse_phase1a(raw: str, agent_id: str) -> "Offer":
+    """Phase 1a: capability만 파싱 (can_provide/need_from_other 없음)."""
     data = extract_json(raw)
     if isinstance(data, list):
         data = data[0] if data else {}
@@ -204,15 +235,7 @@ def _parse_offer(raw: str, agent_id: str) -> Offer:
         if isinstance(raw_scope, list)
         else str(raw_scope).strip()
     )
-
     conf_raw = {str(k): clamp01(v) for k, v in data.get("conf", {}).items()}
-
-    # can_provide: 물리적으로 전달 가능한 아이템만 허용
-    raw_provides = [str(x).strip() for x in data.get("can_provide", []) if str(x).strip()]
-    can_provide  = [p for p in raw_provides if _is_passable(p)]
-    filtered     = [p for p in raw_provides if not _is_passable(p)]
-    if filtered:
-        print(f"  [OFFER] non-passable items filtered from can_provide: {filtered}")
 
     return Offer(
         agent_id        = agent_id,
@@ -222,37 +245,75 @@ def _parse_offer(raw: str, agent_id: str) -> Offer:
         can_do          = can_do,
         cannot_do       = cannot_do,
         conf            = _match_conf(conf_raw, can_do),
-        can_provide     = can_provide,
-        need_from_other = [str(x).strip() for x in data.get("need_from_other", [])
-                           if str(x).strip()],
+        can_provide     = [],   # Phase 1b에서 채워짐
+        need_from_other = [],   # Phase 1b에서 채워짐
         uncertain_count = uncertain_count,
     )
 
 
+def _parse_phase1b(raw: str, offer: "Offer") -> "Offer":
+    """Phase 1b: coordination intent 파싱 후 offer에 반영."""
+    data = extract_json(raw)
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        data = {}
+
+    raw_provides = [str(x).strip() for x in data.get("can_provide", []) if str(x).strip()]
+    can_provide  = [p for p in raw_provides if _is_passable(p)]
+    filtered     = [p for p in raw_provides if not _is_passable(p)]
+    if filtered:
+        print(f"  [1b] non-passable filtered from can_provide: {filtered}")
+
+    offer.can_provide     = can_provide
+    offer.need_from_other = [str(x).strip() for x in data.get("need_from_other", [])
+                              if str(x).strip()]
+    return offer
+
+
 def phase1_offer(
     img_a: str, img_b: str, task: str, verbose: str = "full",
-) -> Tuple[Offer, Offer]:
-    _banner("PHASE 1 — OBSERVATION & OFFER GENERATION")
-    prompt  = _build_phase1_prompt(task)
-    results = _run_parallel([(img_a, prompt, False), (img_b, prompt, False)])
-    raw_a, _ = results[0]
-    raw_b, _ = results[1]
+) -> Tuple["Offer", "Offer"]:
+    _banner("PHASE 1a — OBSERVATION & CAPABILITY DECLARATION")
+
+    # 1a: 이미지 기반 capability 선언 (병렬)
+    prompt_1a = _build_phase1a_prompt(task)
+    results_1a = _run_parallel([(img_a, prompt_1a, False), (img_b, prompt_1a, False)])
+    raw_a1, _ = results_1a[0]
+    raw_b1, _ = results_1a[1]
+
+    offer_a = _parse_phase1a(raw_a1, "agent_A")
+    offer_b = _parse_phase1a(raw_b1, "agent_B")
 
     if verbose == "full":
-        _log("A RAW OFFER", raw_a)
-        _log("B RAW OFFER", raw_b)
+        _log("A RAW 1a", raw_a1)
+        _log("B RAW 1a", raw_b1)
 
-    offer_a = _parse_offer(raw_a, "agent_A")
-    offer_b = _parse_offer(raw_b, "agent_B")
+    print(f"  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)}")
+    print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)}")
+
+    _banner("PHASE 1b — COORDINATION INTENT (after offer exchange)")
+
+    # 1b: 상대방 offer를 보고 나서 coordination intent 결정 (병렬)
+    prompt_1b_a = _build_phase1b_prompt(offer_a, offer_b, task)
+    prompt_1b_b = _build_phase1b_prompt(offer_b, offer_a, task)
+    results_1b  = _run_parallel([(img_a, prompt_1b_a, False), (img_b, prompt_1b_b, False)])
+    raw_a2, _ = results_1b[0]
+    raw_b2, _ = results_1b[1]
+
+    if verbose == "full":
+        _log("A RAW 1b", raw_a2)
+        _log("B RAW 1b", raw_b2)
+
+    offer_a = _parse_phase1b(raw_a2, offer_a)
+    offer_b = _parse_phase1b(raw_b2, offer_b)
 
     if verbose in ("full", "summary"):
-        _log("OFFER A", jdump(offer_to_dict(offer_a)))
-        _log("OFFER B", jdump(offer_to_dict(offer_b)))
+        _log("OFFER A (final)", jdump(offer_to_dict(offer_a)))
+        _log("OFFER B (final)", jdump(offer_to_dict(offer_b)))
 
-    print(f"\n  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)} "
-          f"| provide={len(offer_a.can_provide)} | need={len(offer_a.need_from_other)}")
-    print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)} "
-          f"| provide={len(offer_b.can_provide)} | need={len(offer_b.need_from_other)}")
+    print(f"  A: provide={offer_a.can_provide} | need={offer_a.need_from_other}")
+    print(f"  B: provide={offer_b.can_provide} | need={offer_b.need_from_other}")
     return offer_a, offer_b
 
 
@@ -655,17 +716,19 @@ def _ensure_pass(
 
     # A→B
     plan_a, plan_b = _inject(plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B")
-    # B→A: A의 need_from_other가 물리적 아이템인 경우만
-    _INFO_KW = {"confirmation","confirm","clear","ready","status",
-                "notify","check","verified","done","complete","that"}
-    a_needs_physical = any(
-        not (_kw(n) & _INFO_KW)
-        for n in offer_a.need_from_other
-    )
-    if a_needs_physical:
+    # B→A: Phase 1b에서 B가 실제로 A에게 줄 것을 선언한 경우만
+    b_can_provide_for_a = [
+        p for p in offer_b.can_provide
+        if _is_passable(p) and (
+            any(_fuzzy_match_soft(p, n) for n in offer_a.need_from_other)
+            or any(len(_kw(p) & _kw(cd)) >= 1 for cd in offer_a.can_do)
+        )
+    ]
+    if b_can_provide_for_a:
         plan_b, plan_a = _inject(plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A")
+        print(f"  [ENSURE] B→A active: {b_can_provide_for_a}")
     else:
-        print(f"  [ENSURE] B→A skipped: A only needs confirmation-type info")
+        print(f"  [ENSURE] B→A skipped: B has nothing A actually needs")
     return plan_a, plan_b
 
 
