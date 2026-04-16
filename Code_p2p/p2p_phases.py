@@ -347,8 +347,6 @@ Global task: "{task}"
 
 {_P2_EXAMPLE}
 
-{_P2_HANDOFF_RULES}
-
 Generate YOUR local plan for the global task.
 
 STEP-BY-STEP THINKING:
