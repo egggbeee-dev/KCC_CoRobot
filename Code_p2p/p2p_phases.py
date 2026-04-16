@@ -105,59 +105,62 @@ EXAMPLE — kitchen agent, task "prepare movie night":
   "can_do": [
     "place apple and orange from island onto serving tray",
     "arrange bread from basket onto plate",
+    "fill water glass from tap",
     "wipe counter surface with cloth",
-    "clean visible sink with sponge",
-    "place bottle of water on counter"
+    "clean visible sink with sponge"
   ],
   "cannot_do": [
     {"action": "arrange living room seating", "reason": "NO_OBJECT"},
-    {"action": "adjust TV settings", "reason": "NO_OBJECT"}
+    {"action": "adjust TV lighting", "reason": "NO_OBJECT"}
   ],
   "conf": {
     "place apple and orange from island onto serving tray": 0.9,
     "arrange bread from basket onto plate": 0.85,
+    "fill water glass from tap": 0.9,
     "wipe counter surface with cloth": 0.95,
-    "clean visible sink with sponge": 0.9,
-    "place bottle of water on counter": 0.9
+    "clean visible sink with sponge": 0.9
   },
-  "can_provide": ["snack tray with fruits and bread", "bottle of water"],
-  "need_from_other": ["confirmation that living room table is ready for snacks"]
+  "can_provide": ["snack tray with fruits and bread"],
+  "need_from_other": ["living room table cleared for snacks"]
 }
 </JSON>
 """.strip()
 
 
 def _build_phase1_prompt(task: str) -> str:
-    return f"""You are an embodied home agent. Observe your room image carefully.
+    return f"""You are an embodied home agent observing your room.
 
 Global task: "{task}"
 
 {_P1_EXAMPLE}
 
-Generate your Offer for YOUR room only.
+Generate your Offer for YOUR room only. Be faithful to what is actually visible.
 
 RULES:
-1. Use ONLY objects actually visible in the image.
-2. can_do: max {MAX_CAN_DO} actions. Format: "verb + specific visible object"
-3. cannot_do: max {MAX_CANNOT_DO}. reason: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
-4. conf: confidence [0.0–1.0] per can_do item.
-5. can_provide: ONLY items you can PHYSICALLY CARRY to the room boundary.
-   - YES: "snack tray", "bottle of water", "meal tray", "bowl of popcorn"
-   - NO: "cleaned sink", "wiped counter", "organized shelf", "confirmation"
-   Items must be tangible objects you can pick up and hand over.
-6. need_from_other: what you need the other agent to provide or do.
+1. can_do: max {MAX_CAN_DO} actions using ONLY visible objects.
+   - Prioritize actions that DIRECTLY contribute to the global task.
+   - Format: "verb + specific visible object + purpose"
+2. cannot_do: max {MAX_CANNOT_DO}. reason: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
+3. conf: confidence [0.0–1.0] per can_do item.
+4. can_provide: items you can PHYSICALLY CARRY to the room boundary for the other agent.
+   - ONLY tangible objects: food tray, drink, meal, document, tool
+   - NOT: "cleaned sink", "confirmation", "status", "organized shelf"
+   - Keep to 1–2 items maximum. Only what the OTHER agent actually needs.
+5. need_from_other: 1–2 things you genuinely need from the other agent to complete the task.
+   Focus on physical items or critical information, not generic confirmations.
+6. Think about COLLABORATION: what can you prepare that helps the other agent?
 7. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
   "room_type": "...",
-  "observation": "one concise sentence",
-  "obs_scope": "comma-separated visible objects/areas",
-  "can_do": ["verb + specific object"],
+  "observation": "one concise sentence describing the room",
+  "obs_scope": "comma-separated list of visible objects and areas",
+  "can_do": ["verb + specific object + purpose"],
   "cannot_do": [{{"action": "...", "reason": "NO_OBJECT"}}],
-  "conf": {{"action": 0.9}},
-  "can_provide": ["tangible item only"],
-  "need_from_other": ["..."]
+  "conf": {{"action text": 0.9}},
+  "can_provide": ["max 2 tangible items for the other agent"],
+  "need_from_other": ["max 2 specific needs"]
 }}
 </JSON>"""
 
@@ -324,12 +327,23 @@ Global task: "{task}"
 
 {_P2_HANDOFF_RULES}
 
-Generate YOUR local plan:
+Generate YOUR local plan. Think step by step:
+1. What does the global task require from YOUR room specifically?
+2. What can you prepare for the other agent (see can_provide above)?
+3. What do you need from the other agent (see need_from_other above)?
+
+PLANNING RULES:
 1. Steps ONLY in your room ({my.room_type}), using ONLY visible objects.
-2. Generate 4–6 steps over 0–25 minutes. No repeated actions.
-3. If your can_provide list is NOT empty, add exactly ONE PASS step per item.
-4. PASS step must come AFTER all prep steps for that item (use depends_on).
-5. Return ONLY valid JSON inside <JSON> tags.
+2. Generate 4–6 steps over 0–25 minutes. NO repeated actions.
+3. Prioritize actions that DIRECTLY contribute to the global task.
+4. HANDOFF — if can_provide is NOT empty:
+   - Prepare the item first (1–2 prep steps)
+   - Then add ONE PASS step: "carry [item] to [room] doorway for [other_agent] pickup"
+   - PASS step must have depends_on=[prep step ids]
+5. INFORM — if you want to notify completion:
+   - "notify [other_agent]: [what is ready]"
+   - handoff_type="INFORM", target_agent=[other_agent]
+6. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
@@ -623,7 +637,7 @@ def _ensure_pass(
         recv_step = PlanStep(
             step_id      = new_sid,
             time_min     = min(30, pass_step.time_min + 1),
-            room         = receiver.agent_id.replace("agent_", "") or "other room",
+            room         = r_offer.room_type,
             agent_id     = rid,
             action       = f"receive {item} from {s_offer.room_type} and bring into room",
             preconditions= [f"step {pass_step.step_id} completed"],
@@ -834,7 +848,12 @@ def detect_conflicts(
 
     # ── 6. OBSERVABILITY ──────────────────────────────────────────────────────
     for step, offer in all_steps:
-        if step.handoff_type == "PASS":
+        # PASS / receive / notify / inform / confirm 스텝은 면제
+        if step.handoff_type in ("PASS", "INFORM"):
+            continue
+        act_lower = step.action.lower()
+        if act_lower.startswith(("receive", "notify", "inform", "confirm",
+                                  "auto-added", "carry")):
             continue
         scope_kw = set(re.findall(r"\w+", offer.obs_scope.lower()))
         can_kw: Set[str] = set()
@@ -1001,10 +1020,9 @@ def _lock_steps(
     acc_a = {p.step_id for p in props_a if p.reason.upper() == "ACCEPT"}
     prop_a = {p.step_id for p in props_a if p.reason.upper() != "ACCEPT"}
     prop_b = {p.step_id for p in props_b if p.reason.upper() != "ACCEPT"}
-    agreed     = (prop_a & acc_b) | (prop_b & acc_a)
-    mentioned  = {p.step_id for p in props_a + props_b}
-    uncontested = conflict_sids - mentioned
-    return existing | agreed | uncontested
+    agreed    = (prop_a & acc_b) | (prop_b & acc_a)
+    # uncontested는 lock 안 함 — 미해결 conflict는 다음 라운드에서 처리
+    return existing | agreed
 
 
 def phase4_negotiation(
@@ -1200,9 +1218,13 @@ def _generate_hq_question(
 ) -> str:
     template = _HQ_TEMPLATES.get(trigger_type, "How should the agents handle this?")
     prompt = f"""You are coordinating two home agents.
-Agent A ({offer_a.room_type}), Agent B ({offer_b.room_type}).
+Agent A is in the {offer_a.room_type}. Agent B is in the {offer_b.room_type}.
 Issue ({trigger_type}): {detail[:200]}
-Write ONE specific actionable question for the human operator. Max 2 sentences. No preamble."""
+
+Write ONE clear question for the human operator that:
+- Names which agent and step is involved
+- Asks for a concrete decision
+One sentence only. No preamble."""
     try:
         q, _ = run_vlm(img, prompt)
         q = q.strip().strip('"').strip("'")
@@ -1252,8 +1274,13 @@ def phase6_human_query(
         triggered.append(f"[{c.conflict_type}] {c.description}")
         raw_triggers.append((c.conflict_type, c.description, 0.80))
 
+    _INFO_KW = {"confirmation","confirm","ready","status","notify",
+                "check","verified","done","complete","that","whether"}
     all_provides = offer_a.can_provide + offer_b.can_provide
     for need in offer_a.need_from_other + offer_b.need_from_other:
+        # 정보성 need (confirmation 류)는 UNMATCHED 탐지 제외
+        if _kw(need) & _INFO_KW:
+            continue
         if not any(_fuzzy_match_soft(need, p) for p in all_provides):
             d = f"No agent can provide: '{need}'"
             triggered.append(f"[UNMATCHED] {d}")
@@ -1312,6 +1339,23 @@ def phase_finalize(
             print(f"    Q: {q[:65]}...")
             print(f"    A: {a}")
 
+    # HQ 답변 반영: "delete", "remove", "skip" → 관련 스텝 삭제
+    #               "yes", "keep", "add" → 현재 유지
+    _DELETE_HINTS = {"delete", "remove", "skip", "drop", "ignore", "no"}
+    for q, a in human_answers.items():
+        a_lower = a.lower()
+        a_words = set(a_lower.split())
+        if a_words & _DELETE_HINTS:
+            # 질문에서 step_id 추출 시도
+            import re as _re
+            sids = [int(x) for x in _re.findall(r"step[\s_]?(\\d+)", q, _re.IGNORECASE)]
+            for sid in sids:
+                for plan in [steps_a, steps_b]:
+                    before = len(plan)
+                    plan[:] = [s for s in plan if s.get("step_id") != sid]
+                    if len(plan) < before:
+                        print(f"  [FINALIZE] step{sid} removed per human answer: '{a[:40]}'")
+
     merged = list(steps_a) + list(steps_b)
     merged.sort(key=lambda s: (s.get("time_min", 0), s.get("step_id", 0)))
 
@@ -1343,99 +1387,83 @@ def phase_finalize(
 
 def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     """
-    Joint plan을 타임라인 형식으로 출력.
-    두 에이전트를 나란히 보여주고 PASS/INFORM을 화살표로 명시.
+    Joint plan을 자연어 줄글 형식으로 출력.
+    타임라인 순으로 각 스텝을 설명하고, PASS/INFORM은 명시적으로 표시.
     """
     if not plan:
         return "  (empty)"
 
-    steps_a = sorted([s for s in plan if s.get("agent_id") == "agent_A"],
-                     key=lambda s: s.get("time_min", 0))
-    steps_b = sorted([s for s in plan if s.get("agent_id") == "agent_B"],
-                     key=lambda s: s.get("time_min", 0))
-
-    room_a = steps_a[0].get("room", "agent_A") if steps_a else "agent_A"
-    room_b = steps_b[0].get("room", "agent_B") if steps_b else "agent_B"
-
     id_to_step: Dict[int, Dict] = {s["step_id"]: s for s in plan}
-    W   = 36
-    SEP = "━" * (W * 2 + 7)
+
+    steps_a = [s for s in plan if s.get("agent_id") == "agent_A"]
+    steps_b = [s for s in plan if s.get("agent_id") == "agent_B"]
+    room_a  = steps_a[0].get("room", "Room A") if steps_a else "Room A"
+    room_b  = steps_b[0].get("room", "Room B") if steps_b else "Room B"
 
     n_pass   = sum(1 for s in plan if s.get("handoff_type") == "PASS")
     n_inform = sum(1 for s in plan if s.get("handoff_type") == "INFORM")
     max_t    = max((s.get("time_min", 0) for s in plan), default=0)
 
-    def _short(text: str, w: int) -> str:
-        return text if len(text) <= w else text[:w - 1] + "…"
+    SEP  = "━" * 68
+    SEP2 = "─" * 68
 
-    def _room_label(room: str, agent: str) -> str:
-        r = room.upper()
-        return f"[{r} — {agent}]"
+    def _dep_note(s: Dict) -> str:
+        deps = s.get("depends_on", [])
+        if not deps:
+            return ""
+        cross = [id_to_step[d] for d in deps
+                 if d in id_to_step and id_to_step[d].get("agent_id") != s.get("agent_id")]
+        if cross:
+            acts = ", ".join(f'"{x["action"][:35]}…"' if len(x["action"]) > 35
+                             else f'"{x["action"]}"' for x in cross[:2])
+            return f"\n       (waits for: {acts})"
+        return ""
 
     lines: List[str] = []
     lines.append(SEP)
-    title = f"  JOINT PLAN — {_short(task, 55)}" if task else "  JOINT PLAN"
-    lines.append(title)
-    lines.append(f"  {len(plan)} steps | {n_pass} handoff(s) | {n_inform} notify | Est. {max_t}+ min")
+    task_str = task[:60] + "…" if len(task) > 60 else task
+    if task_str:
+        lines.append(f'  "{task_str}"')
+    lines.append(
+        f"  {room_a.upper()} (agent_A) + {room_b.upper()} (agent_B)  |  "
+        f"{len(plan)} steps  |  {n_pass} handoff  |  {n_inform} notify  |  ~{max_t} min"
+    )
     lines.append(SEP)
-    lines.append(f"  {_room_label(room_a, 'agent_A'):<{W}}   {_room_label(room_b, 'agent_B')}")
-    lines.append(f"  {'─' * W}   {'─' * W}")
+    lines.append("")
 
+    # 타임라인 순서로 출력
     all_times = sorted({s.get("time_min", 0) for s in plan})
 
     for t in all_times:
-        slot_a = [s for s in steps_a if s.get("time_min") == t]
-        slot_b = [s for s in steps_b if s.get("time_min") == t]
-        max_rows = max(len(slot_a), len(slot_b), 1)
+        slot = sorted(
+            [s for s in plan if s.get("time_min") == t],
+            key=lambda s: s.get("agent_id", "")
+        )
+        lines.append(f"  T = {t:>2} min")
+        lines.append(f"  {SEP2[:50]}")
 
-        for row in range(max_rows):
-            sa = slot_a[row] if row < len(slot_a) else None
-            sb = slot_b[row] if row < len(slot_b) else None
+        for s in slot:
+            agent  = s.get("agent_id", "?")
+            room   = s.get("room", "?")
+            action = s.get("action", "")
+            ht     = s.get("handoff_type")
+            tgt    = s.get("target_agent", "")
 
-            t_label = f"T={t:>2}m" if row == 0 else "     "
-
-            # A 컬럼
-            if sa:
-                ht_a = sa.get("handoff_type")
-                act_a = _short(sa.get("action", ""), W - 10)
-                if ht_a == "PASS":
-                    col_a = f"{t_label}  ──PASS──► {act_a}"
-                elif ht_a == "INFORM":
-                    col_a = f"{t_label}  ~~NOTIFY► {act_a}"
-                else:
-                    cross = any(
-                        id_to_step.get(d, {}).get("agent_id") == "agent_B"
-                        for d in sa.get("depends_on", [])
-                    )
-                    dep = " ◄[B]" if cross else ""
-                    col_a = f"{t_label}  {_short(sa.get('action',''), W - 7)}{dep}"
+            # 핸드오프 표시
+            if ht == "PASS":
+                marker = f"  ──► PASS to {tgt}"
+            elif ht == "INFORM":
+                marker = f"  ~~► NOTIFY {tgt}"
             else:
-                col_a = ""
+                marker = ""
 
-            # B 컬럼
-            if sb:
-                ht_b = sb.get("handoff_type")
-                act_b = _short(sb.get("action", ""), W - 10)
-                if ht_b == "PASS":
-                    col_b = f"◄──PASS──  {act_b}"
-                elif ht_b == "INFORM":
-                    col_b = f"◄~~NOTIFY  {act_b}"
-                else:
-                    cross = any(
-                        id_to_step.get(d, {}).get("agent_id") == "agent_A"
-                        for d in sb.get("depends_on", [])
-                    )
-                    dep = "◄[A] " if cross else ""
-                    col_b = f"{dep}{_short(sb.get('action',''), W - 6)}"
-            else:
-                col_b = ""
+            dep_note = _dep_note(s)
+            lines.append(f"  [{room}] {action}{marker}{dep_note}")
 
-            lines.append(f"  {col_a:<{W}}   {col_b}")
-
-    lines.append(SEP)
+        lines.append("")
 
     # COORDINATION SUMMARY
-    coord: List[str] = []
+    coord = []
     for s in sorted(plan, key=lambda x: x.get("time_min", 0)):
         ht  = s.get("handoff_type")
         if not ht:
@@ -1443,21 +1471,22 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
         src = s.get("agent_id", "?")
         tgt = s.get("target_agent", "?")
         t   = s.get("time_min", 0)
-        act = _short(s.get("action", ""), 45)
-        receivers = [
-            r for r in plan
-            if s["step_id"] in r.get("depends_on", [])
-            and r.get("agent_id") != src
-        ]
+        act = s.get("action", "")
+        if len(act) > 50:
+            act = act[:50] + "…"
+        receivers = [r for r in plan
+                     if s["step_id"] in r.get("depends_on", [])
+                     and r.get("agent_id") != src]
         if ht == "PASS":
-            recv_t = receivers[0].get("time_min", t + 1) if receivers else t + 1
-            coord.append(f"  • {src} ──[PASS]──► {tgt}  '{act}'  (T={t}m → T={recv_t}m)")
+            recv_t = receivers[0].get("time_min", t+1) if receivers else t+1
+            coord.append(f"  {src} ──[PASS]──► {tgt}  |  '{act}'  (T={t}m → T={recv_t}m)")
         elif ht == "INFORM":
-            coord.append(f"  • {src} ~~[NOTIFY]~~► {tgt}  '{act}'  (T={t}m)")
+            coord.append(f"  {src} ~~[NOTIFY]~~► {tgt}  |  '{act}'  (T={t}m)")
 
     if coord:
-        lines.append("  COORDINATION SUMMARY")
+        lines.append(SEP2)
+        lines.append("  COORDINATION")
         lines.extend(coord)
-        lines.append(SEP)
+    lines.append(SEP)
 
     return "\n".join(lines)
