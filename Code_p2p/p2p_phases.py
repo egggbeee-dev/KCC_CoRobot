@@ -92,13 +92,12 @@ def _is_passable(item: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PHASE 1a: OBSERVATION (이미지 기반 capability 선언)
-# Phase 1b: COORDINATION INTENT (상대방 offer를 보고 can_provide/need 결정)
+# PHASE 1: OBSERVATION & OFFER GENERATION
+# GPT-4o 기반 — 태스크 맥락 + 이미지를 함께 이해해서 올바른 offer 생성
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── Phase 1a 프롬프트: 이미지만 보고 capability 선언 ─────────────────────────
-_P1A_EXAMPLE = """
-EXAMPLE — kitchen agent, task "prepare movie night":
+_P1_EXAMPLE = """
+EXAMPLE — kitchen agent, task "prepare movie night with snacks":
 <JSON>
 {
   "room_type": "kitchen",
@@ -121,29 +120,72 @@ EXAMPLE — kitchen agent, task "prepare movie night":
     "fill water glass from tap": 0.9,
     "wipe counter surface with cloth": 0.95,
     "clean visible sink with sponge": 0.9
-  }
+  },
+  "can_provide": ["snack tray with fruits and bread"],
+  "need_from_other": ["living room table cleared and ready for snacks"]
+}
+</JSON>
+
+EXAMPLE — bedroom agent, task "prepare for sick person staying home":
+<JSON>
+{
+  "room_type": "bedroom",
+  "observation": "Bedroom with bed, dresser, lamp, alarm clock.",
+  "obs_scope": "bed, dresser, lamp, alarm clock, pillow, blanket",
+  "can_do": [
+    "fluff and arrange pillows for comfort",
+    "fold back blanket for easy access",
+    "dim lamp for restful lighting",
+    "set alarm clock for medication reminder",
+    "clear dresser surface for tray placement"
+  ],
+  "cannot_do": [
+    {"action": "prepare food or drinks", "reason": "NO_OBJECT"},
+    {"action": "operate kitchen appliances", "reason": "NO_OBJECT"}
+  ],
+  "conf": {
+    "fluff and arrange pillows for comfort": 0.9,
+    "fold back blanket for easy access": 0.9,
+    "dim lamp for restful lighting": 0.95,
+    "set alarm clock for medication reminder": 0.85,
+    "clear dresser surface for tray placement": 0.9
+  },
+  "can_provide": [],
+  "need_from_other": ["food tray with light meal and warm drink from kitchen"]
 }
 </JSON>
 """.strip()
 
 
-def _build_phase1a_prompt(task: str) -> str:
-    return f"""You are an embodied home agent observing your room image.
+def _build_phase1_prompt(task: str) -> str:
+    return f"""You are an embodied home agent. Look at your room image carefully.
 
 Global task: "{task}"
 
-{_P1A_EXAMPLE}
+{_P1_EXAMPLE}
 
-Observe YOUR room and declare your capabilities. Be faithful to what is visible.
+Generate YOUR offer based on what is visible in your image.
 
 RULES:
-1. can_do: max {MAX_CAN_DO} actions using ONLY objects visible in your image.
-   - Prioritize actions that DIRECTLY contribute to the global task.
+1. can_do: max {MAX_CAN_DO} actions using ONLY objects visible in your room.
+   - Focus on actions that contribute to the global task.
    - Format: "verb + specific visible object"
+
 2. cannot_do: max {MAX_CANNOT_DO}. reason: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
+
 3. conf: confidence [0.0–1.0] per can_do item.
-4. Do NOT include can_provide or need_from_other here. That comes later.
-5. Return ONLY valid JSON inside <JSON> tags.
+
+4. can_provide: items you will PHYSICALLY CARRY to the room boundary for the other agent.
+   Ask yourself: "Does the other agent need something I can prepare and deliver?"
+   - YES: food tray, drink, medicine, document — tangible items the other agent uses
+   - NO: electronics (laptop, phone), furniture, room conditions, confirmations
+   - Write [] if the other agent does not need anything physical from you.
+   - Maximum 1–2 items.
+
+5. need_from_other: what you genuinely need FROM the other agent to do your job.
+   - Be specific. Write [] if you don't need anything.
+
+6. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
@@ -152,51 +194,14 @@ RULES:
   "obs_scope": "comma-separated visible objects and areas",
   "can_do": ["verb + specific object"],
   "cannot_do": [{{"action": "...", "reason": "NO_OBJECT"}}],
-  "conf": {{"action": 0.9}}
+  "conf": {{"action": 0.9}},
+  "can_provide": ["tangible item to deliver, or []"],
+  "need_from_other": ["specific need, or []"]
 }}
 </JSON>"""
 
 
-# ── Phase 1b 프롬프트: 상대방 offer를 보고 coordination intent 결정 ───────────
-def _build_phase1b_prompt(my: "Offer", other: "Offer", task: str) -> str:
-    return f"""You are the {my.room_type} agent ({my.agent_id}).
-Global task: "{task}"
-
-YOUR capabilities:
-- room: {my.room_type}
-- can_do: {json.dumps(my.can_do, ensure_ascii=False)}
-
-OTHER agent ({other.room_type}, {other.agent_id}) capabilities:
-- can_do: {json.dumps(other.can_do, ensure_ascii=False)}
-
-Now decide COORDINATION INTENT:
-
-QUESTION 1 — can_provide:
-  "Is there anything I can PHYSICALLY CARRY to the room boundary
-   that the other agent needs to complete THEIR part of the task?"
-  Think: Does their job require something I can prepare?
-  - If YES: list the item (max 1-2, tangible objects only)
-  - If NO: write []
-  - NOT passable: furniture, electronics, room conditions, status confirmations
-
-QUESTION 2 — need_from_other:
-  "Is there anything the other agent can provide that I need
-   to complete MY part of the task?"
-  - If YES: list it specifically (max 1-2)
-  - If NO: write []
-
-Return ONLY valid JSON inside <JSON> tags.
-
-<JSON>
-{{
-  "can_provide": ["item you will carry to boundary for the other agent"],
-  "need_from_other": ["item or service you need from the other agent"]
-}}
-</JSON>"""
-
-
-def _parse_phase1a(raw: str, agent_id: str) -> "Offer":
-    """Phase 1a: capability만 파싱 (can_provide/need_from_other 없음)."""
+def _parse_offer(raw: str, agent_id: str) -> Offer:
     data = extract_json(raw)
     if isinstance(data, list):
         data = data[0] if data else {}
@@ -237,6 +242,12 @@ def _parse_phase1a(raw: str, agent_id: str) -> "Offer":
     )
     conf_raw = {str(k): clamp01(v) for k, v in data.get("conf", {}).items()}
 
+    raw_provides = [str(x).strip() for x in data.get("can_provide", []) if str(x).strip()]
+    can_provide  = [p for p in raw_provides if _is_passable(p)]
+    filtered     = [p for p in raw_provides if not _is_passable(p)]
+    if filtered:
+        print(f"  [OFFER] non-passable filtered: {filtered}")
+
     return Offer(
         agent_id        = agent_id,
         room_type       = str(data.get("room_type", "")).strip(),
@@ -245,75 +256,37 @@ def _parse_phase1a(raw: str, agent_id: str) -> "Offer":
         can_do          = can_do,
         cannot_do       = cannot_do,
         conf            = _match_conf(conf_raw, can_do),
-        can_provide     = [],   # Phase 1b에서 채워짐
-        need_from_other = [],   # Phase 1b에서 채워짐
+        can_provide     = can_provide,
+        need_from_other = [str(x).strip() for x in data.get("need_from_other", [])
+                           if str(x).strip()],
         uncertain_count = uncertain_count,
     )
 
 
-def _parse_phase1b(raw: str, offer: "Offer") -> "Offer":
-    """Phase 1b: coordination intent 파싱 후 offer에 반영."""
-    data = extract_json(raw)
-    if isinstance(data, list):
-        data = data[0] if data else {}
-    if not isinstance(data, dict):
-        data = {}
-
-    raw_provides = [str(x).strip() for x in data.get("can_provide", []) if str(x).strip()]
-    can_provide  = [p for p in raw_provides if _is_passable(p)]
-    filtered     = [p for p in raw_provides if not _is_passable(p)]
-    if filtered:
-        print(f"  [1b] non-passable filtered from can_provide: {filtered}")
-
-    offer.can_provide     = can_provide
-    offer.need_from_other = [str(x).strip() for x in data.get("need_from_other", [])
-                              if str(x).strip()]
-    return offer
-
-
 def phase1_offer(
     img_a: str, img_b: str, task: str, verbose: str = "full",
-) -> Tuple["Offer", "Offer"]:
-    _banner("PHASE 1a — OBSERVATION & CAPABILITY DECLARATION")
-
-    # 1a: 이미지 기반 capability 선언 (병렬)
-    prompt_1a = _build_phase1a_prompt(task)
-    results_1a = _run_parallel([(img_a, prompt_1a, False), (img_b, prompt_1a, False)])
-    raw_a1, _ = results_1a[0]
-    raw_b1, _ = results_1a[1]
-
-    offer_a = _parse_phase1a(raw_a1, "agent_A")
-    offer_b = _parse_phase1a(raw_b1, "agent_B")
+) -> Tuple[Offer, Offer]:
+    _banner("PHASE 1 — OBSERVATION & OFFER GENERATION")
+    prompt  = _build_phase1_prompt(task)
+    results = _run_parallel([(img_a, prompt, False), (img_b, prompt, False)])
+    raw_a, _ = results[0]
+    raw_b, _ = results[1]
 
     if verbose == "full":
-        _log("A RAW 1a", raw_a1)
-        _log("B RAW 1a", raw_b1)
+        _log("A RAW OFFER", raw_a)
+        _log("B RAW OFFER", raw_b)
 
-    print(f"  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)}")
-    print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)}")
-
-    _banner("PHASE 1b — COORDINATION INTENT (after offer exchange)")
-
-    # 1b: 상대방 offer를 보고 나서 coordination intent 결정 (병렬)
-    prompt_1b_a = _build_phase1b_prompt(offer_a, offer_b, task)
-    prompt_1b_b = _build_phase1b_prompt(offer_b, offer_a, task)
-    results_1b  = _run_parallel([(img_a, prompt_1b_a, False), (img_b, prompt_1b_b, False)])
-    raw_a2, _ = results_1b[0]
-    raw_b2, _ = results_1b[1]
-
-    if verbose == "full":
-        _log("A RAW 1b", raw_a2)
-        _log("B RAW 1b", raw_b2)
-
-    offer_a = _parse_phase1b(raw_a2, offer_a)
-    offer_b = _parse_phase1b(raw_b2, offer_b)
+    offer_a = _parse_offer(raw_a, "agent_A")
+    offer_b = _parse_offer(raw_b, "agent_B")
 
     if verbose in ("full", "summary"):
-        _log("OFFER A (final)", jdump(offer_to_dict(offer_a)))
-        _log("OFFER B (final)", jdump(offer_to_dict(offer_b)))
+        _log("OFFER A", jdump(offer_to_dict(offer_a)))
+        _log("OFFER B", jdump(offer_to_dict(offer_b)))
 
-    print(f"  A: provide={offer_a.can_provide} | need={offer_a.need_from_other}")
-    print(f"  B: provide={offer_b.can_provide} | need={offer_b.need_from_other}")
+    print(f"  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)} "
+          f"| provide={offer_a.can_provide} | need={offer_a.need_from_other}")
+    print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)} "
+          f"| provide={offer_b.can_provide} | need={offer_b.need_from_other}")
     return offer_a, offer_b
 
 
@@ -322,48 +295,36 @@ def phase1_offer(
 # ══════════════════════════════════════════════════════════════════════════════
 
 _P2_EXAMPLE = """
-EXAMPLE — kitchen agent:
+EXAMPLE — kitchen agent, task "prepare for sick person staying home":
+
+Context:
+- YOUR can_provide: ["light meal tray with fruits and toast"]
+- OTHER agent (bedroom) can_provide: []
+- OTHER agent needs from you: ["food tray with light meal and warm drink"]
+
 <JSON>
 {
   "plan_steps": [
-    {"step_id":1,"time_min":0,"action":"place apple and orange from island onto serving tray",
+    {"step_id":1,"time_min":0,"action":"place apple slices and orange onto plate",
      "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
      "uncertainty":0.1,"notes":""},
-    {"step_id":2,"time_min":5,"action":"arrange bread from basket onto plate",
+    {"step_id":2,"time_min":5,"action":"arrange toast from bread basket onto tray",
      "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
      "uncertainty":0.1,"notes":""},
-    {"step_id":3,"time_min":10,"action":"carry snack tray to kitchen doorway for agent_B pickup",
-     "preconditions":["snacks on tray"],"depends_on":[1,2],
-     "handoff_type":"PASS","target_agent":"agent_B",
-     "uncertainty":0.15,"notes":"snack tray ready at doorway"},
-    {"step_id":4,"time_min":15,"action":"wipe counter surface with cloth",
+    {"step_id":3,"time_min":10,"action":"fill water glass from tap and place on tray",
+     "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
+     "uncertainty":0.1,"notes":""},
+    {"step_id":4,"time_min":15,"action":"carry meal tray to kitchen doorway for agent_B pickup",
+     "preconditions":["meal tray ready"],"depends_on":[1,2,3],
+     "handoff_type":"PASS","target_agent":"agent_B","uncertainty":0.15,
+     "notes":"meal tray ready at doorway"},
+    {"step_id":5,"time_min":20,"action":"wipe counter surface with cloth",
      "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
      "uncertainty":0.1,"notes":""}
   ]
 }
 </JSON>
 """.strip()
-
-_P2_HANDOFF_RULES = """
-HANDOFF RULES:
-
-PASS — physical delivery to room boundary:
-  USE WHEN: you physically carry an item to the doorway for the other agent.
-  ACTION must start with: "carry" or "bring"
-  CORRECT: {"action":"carry snack tray to doorway","handoff_type":"PASS",
-             "target_agent":"agent_B","depends_on":[1,2]}
-  WRONG: PASS on preparation steps (place, arrange, set up, organize)
-  WRONG: PASS on non-physical items (sink, counter, status, confirmation)
-  MAXIMUM: 1–2 PASS steps total. Only for items in your can_provide list.
-
-INFORM — status notification (no physical movement):
-  USE WHEN: you want to notify the other agent of completion.
-  CORRECT: {"action":"notify agent_B: snacks are ready at doorway",
-             "handoff_type":"INFORM","target_agent":"agent_B"}
-
-KEY: "carry X to doorway" → PASS | "notify agent_B" → INFORM | all others → null
-""".strip()
-
 
 def _build_phase2_prompt(my: Offer, other: Offer, task: str, use_offer: bool) -> str:
     if use_offer:
@@ -388,23 +349,27 @@ Global task: "{task}"
 
 {_P2_HANDOFF_RULES}
 
-Generate YOUR local plan. Think step by step:
-1. What does the global task require from YOUR room specifically?
-2. What can you prepare for the other agent (see can_provide above)?
-3. What do you need from the other agent (see need_from_other above)?
+Generate YOUR local plan for the global task.
 
-PLANNING RULES:
+STEP-BY-STEP THINKING:
+1. What is MY role in this task based on my room and capabilities?
+2. Do I need to prepare something for the other agent? (check can_provide)
+3. Will I receive something from the other agent? (check need_from_other)
+
+RULES:
 1. Steps ONLY in your room ({my.room_type}), using ONLY visible objects.
-2. Generate 4–6 steps over 0–25 minutes. NO repeated actions.
-3. Prioritize actions that DIRECTLY contribute to the global task.
-4. HANDOFF — if can_provide is NOT empty:
-   - Prepare the item first (1–2 prep steps)
-   - Then add ONE PASS step: "carry [item] to [room] doorway for [other_agent] pickup"
-   - PASS step must have depends_on=[prep step ids]
-5. INFORM — if you want to notify completion:
-   - "notify [other_agent]: [what is ready]"
-   - handoff_type="INFORM", target_agent=[other_agent]
-6. Return ONLY valid JSON inside <JSON> tags.
+2. Generate 4–6 steps, 0–25 minutes. No repeated actions.
+3. Focus on actions that directly contribute to the global task goal.
+4. PASS — if can_provide is NOT empty:
+   - First: 1–2 prep steps to prepare the item
+   - Then: ONE PASS step "carry [item] to {my.room_type} doorway for [agent] pickup"
+   - PASS step: handoff_type="PASS", target_agent=[other], depends_on=[prep_ids]
+5. RECEIVE — if need_from_other is NOT empty:
+   - Add a receive step AFTER the expected PASS time
+   - "receive [item] from [other room] and place on [location]"
+   - depends_on will be linked automatically by the system
+6. INFORM — optional, to notify the other agent of important status
+7. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
