@@ -1,199 +1,42 @@
 [
   {
     "id": "task_001",
-    "description": "Prepare the kitchen and living room for a family movie night with snacks. Identify what snacks and drinks to prepare and arrange the living room seating and lighting for viewing.",
-    "ground_truth": {
-      "kitchen": [
-        "Check available snack ingredients in the environment",
-        "Take out prepared drinks",
-        "Set up cups",
-        "Set up a tray"
-      ],
-      "living room": [
-        "Remove objects blocking the TV view",
-        "Arrange the sofa so people can sit",
-        "Arrange cushions so people can sit",
-        "Dim the main lights",
-        "Turn on ambient lighting",
-        "Place snacks around the sofa"
-      ]
-    }
+    "description": "Prepare the kitchen and living room for a family movie night. Identify and prepare snacks and drinks using ingredients you can observe in the kitchen, then arrange the living room seating and lighting for a viewing experience."
   },
   {
     "id": "task_002",
-    "description": "A person is not feeling well and staying home. Prepare light food and warm drinks in the kitchen, and set up the bedroom for comfortable rest.",
-    "ground_truth": {
-      "kitchen": [
-        "Prepare available warm drink ingredients in the environment",
-        "Check for easily digestible food ingredients",
-        "Prepare a mug",
-        "Prepare a bowl",
-        "Prepare a spoon",
-        "Set food on a tray to bring to the bedroom"
-      ],
-      "bedroom": [
-        "Make the bed for comfort",
-        "Dim the lights",
-        "Tidy the desk"
-      ]
-    }
+    "description": "I’m not feeling well today and staying home. Prepare light food and warm drinks in the kitchen using visible items, and bring them to the bedroom to set up for my comfortable rest."
   },
   {
     "id": "task_003",
-    "description": "Prepare the house for a full day of working from home. Set up a comfortable workspace in the bedroom and ensure the kitchen is organized for easy meal access throughout the day.",
-    "ground_truth": {
-      "bedroom": [
-        "Clear unnecessary items from the desk to secure workspace",
-        "Secure space to place a laptop",
-        "Secure space to place a mouse",
-        "Set lighting to bright",
-        "Place writing supplies on the desk"
-      ],
-      "kitchen": [
-        "Check food ingredients for meals",
-        "Organize snacks for easy access",
-        "Organize drinks for easy access",
-        "Prepare a cup",
-        "Tidy the sink to avoid distractions"
-      ]
-    }
+    "description": "Prepare the house for a full day of working from home. Set up a comfortable workspace in the living room and bring simple food and drinks from the kitchen to the living room workspace for easy access."
   },
   {
     "id": "task_004",
-    "description": "A guest is arriving in 30 minutes for a pajama party. Quickly tidy the kitchen and bedroom, prepare simple snacks, and set up the bedroom as the main space for relaxing and eating.",
-    "ground_truth": {
-      "kitchen": [
-        "Do the dishes",
-        "Tidy up items",
-        "Wipe the counter",
-        "Prepare simple snacks",
-        "Prepare simple drinks",
-        "Place on a tray to bring to the bedroom",
-        "Place in containers to bring to the bedroom"
-      ],
-      "bedroom": [
-        "Make the duvet tidy",
-        "Arrange the pillows",
-        "Arrange cushions for comfortable sitting or lying",
-        "Clear floor items to secure activity space",
-        "Secure space to place snacks",
-        "Place snacks in an easily accessible location in the bedroom",
-        "Place drinks in an easily accessible location in the bedroom",
-        "Dim the lights"
-      ]
-    }
+    "description": "A guest is arriving in 30 minutes for a pajama party in the bedroom. Quickly tidy the kitchen and bedroom, prepare simple snacks, and set up the bedroom as the main space for guests to relax and eat."
+  },
+  {
+    "id": "task_005",
+    "description": "A video call meeting is starting in 20 minutes. Set up a comfortable workspace in the bedroom, and prepare a drink from the kitchen to bring to the bedroom to stay focused during the call."
+  },
+  {
+    "id": "task_006",
+    "description": "Prepare the home for an indoor workout session. Clear sufficient open space in the living room for exercise, and prepare a snack tray from the kitchen to keep energy up."
+  },
+  {
+    "id": "task_007",
+    "description": "Prepare the home for a long-term vacation. Collect any remaining food items from the kitchen and bring them to the bedroom so I can pack them before leaving."
+  },
+  {
+    "id": "task_008",
+    "description": "Unexpected guests are coming in 15 minutes. Quickly prepare a snack tray in the kitchen using visible items and tidy the living room for hosting."
   },
   {
     "id": "task_009",
-    "description": "Prepare the house for an overnight work session. Set up the bedroom as the main workspace and ensure the kitchen is prepared to support long hours of work, including making coffee using a coffee machine.",
-    "ground_truth": {
-      "bedroom": [
-        "Clear all unnecessary items from the desk",
-        "Set lighting to bright",
-        "Place study materials on the desk",
-        "Place writing supplies on the desk",
-        "Place the laptop on the desk",
-        "Secure a comfortable chair for long hours of work",
-        "Place coffee received from the kitchen on the desk"
-      ],
-      "kitchen": [
-        "Prepare easily consumable food",
-        "Check the location and availability of the coffee machine",
-        "Prepare water to make coffee",
-        "Prepare coffee beans to make coffee",
-        "Set up a cup for immediate drinking",
-        "Organize food for easy access during the night"
-      ]
-    }
+    "description": "The baby needs to leave for daycare in 30 minutes. Prepare a simple meal in the kitchen using visible items, and organize the bathroom with towels and hygiene items to wash the baby."
   },
   {
     "id": "task_010",
-    "description": "Prepare the home for an indoor workout session by actively clearing and creating sufficient open space in the living room for exercise, while ensuring the kitchen supports hydration needs.",
-    "ground_truth": {
-      "kitchen": [
-        "Check if drinks are available",
-        "Prepare a cup to use",
-        "Check for easily consumable snacks"
-      ],
-      "living room": [
-        "Clear floor space so a yoga mat can be fully unrolled",
-        "Actively remove objects on and around the floor",
-        "Move small furniture to the edges",
-        "Remove elements that could interfere with exercise",
-        "Confirm the center of the exercise space is obstacle-free",
-        "Set lighting to bright to create a comfortable environment",
-        "Ventilate to create a comfortable environment"
-      ]
-    }
-  },
-  {
-    "id": "task_011",
-    "description": "Prepare the home for a long-term absence (vacation). Inspect the kitchen and bedroom to ensure all utilities are safe, and collect any food items left in the bedroom to bring with you before leaving.",
-    "ground_truth": {
-      "kitchen": [
-        "Check that the stove is completely off",
-        "Check that the oven is completely off",
-        "Discard any perishable food",
-        "Check that the refrigerator door is securely closed",
-        "Check under the sink for signs of leaks"
-      ],
-      "bedroom": [
-        "Check if there is any food in the bedroom",
-        "Check if there are any drinks in the bedroom",
-        "Check for food items",
-        "Check for items plugged into outlets",
-        "Ensure no electronic devices are running"
-      ]
-    }
-  },
-  {
-    "id": "task_013",
-    "description": "There is very limited time before leaving the house. Inspect multiple rooms and decide which tasks to complete first to maximize overall readiness.",
-    "ground_truth": {
-      "kitchen": [
-        "Check if any appliances are on (e.g., stove)",
-        "Remove any hazards if found",
-        "Skip low-priority tasks if time is insufficient"
-      ],
-      "living room": [
-        "Check for obstacles on the floor or in pathways",
-        "Remove hazards",
-        "Skip low-priority tasks if time is insufficient"
-      ]
-    }
-  },
-  {
-    "id": "task_014",
-    "description": "A baby needs to leave for daycare in 30 minutes and preparation is behind schedule. Quickly prepare food and hygiene essentials using the kitchen and bathroom.",
-    "ground_truth": {
-      "kitchen": [
-        "Check for ingredients to prepare a meal or simple food for the baby",
-        "Select food or snacks that can be prepared quickly",
-        "Organize food to take when going out",
-        "Organize drinks to take when going out"
-      ],
-      "bathroom": [
-        "Locate the sink for quickly washing hands, face, etc.",
-        "Check the condition of the soap",
-        "Check that a towel is hanging",
-        "Check for toothbrushing supplies"
-      ]
-    }
-  },
-  {
-    "id": "task_015",
-    "description": "The baby has urinated. Clean the baby and restore a hygienic environment using the bedroom and bathroom.",
-    "ground_truth": {
-      "bedroom": [
-        "Check whether the area where the baby was is contaminated",
-        "Prepare clean clothes",
-        "Secure a stable space to lay the baby down"
-      ],
-      "bathroom": [
-        "Locate the bathtub for quickly washing the baby",
-        "Locate the towel",
-        "Check the condition of the soap"
-      ]
-    }
+    "description": "The baby urinated on the bed. Bring the bedding to the bathroom for washing, then prepare clean towels in the bathroom to clean the baby."
   }
 ]
