@@ -209,29 +209,32 @@ def run(
     handoff_match = matched_pass / max(len(pass_steps), 1) if pass_steps else 1.0
 
     metrics = {
-        "conflicts":    n_conflicts,
-        "conflicts_after":     len(convergence.unresolved_conflicts),
-        "conflict_reduction":  round(conflict_reduction, 3),
-        "convergence_rate":    1.0 if convergence.converged else 0.0,
-        "negotiation_rounds":  len(neg_rounds),
-        "observability_rate":  round(observability_rate, 3),
+        # 플랜 품질 지표 (핵심)
         "handoff_match_rate":  round(handoff_match, 3),
-        "cross_agent_deps":   cross_deps,
+        "cross_agent_deps":    cross_deps,
+        "conflict_reduction":  round(conflict_reduction, 3),
+        "observability_rate":  round(observability_rate, 3),
+        # 협상/HQ 지표
+        "negotiation_rounds":  len(neg_rounds),
         "hq_triggered":        len(hq_triggers),
         "hq_asked":            len(hq_asked),
+        # 시스템 안정성 (참고용)
+        "conflicts":           n_conflicts,
+        "conflicts_after":     len(convergence.unresolved_conflicts),
+        "system_stability":    1.0 if convergence.converged else 0.0,
     }
 
     # ── 최종 출력 ─────────────────────────────────────────────────────────────
     print("\n" + "█" * 68)
     print(f"  FINAL JOINT PLAN — {label}")
     print("█" * 68)
-    print(format_joint_plan(joint,task))
+    print(format_joint_plan(joint))
 
     print(f"\n  METRICS")
     print(f"  {'─'*40}")
     for k, v in metrics.items():
         print(f"  {k:<28} {v}")
-    print(f"  Converged: {'YES ✓' if convergence.converged else 'NO ✗'}")
+    print(f"  system_stability: {'stable ✓' if convergence.converged else 'unstable (see conflicts)'}")
 
     return {
         "label":   label,
