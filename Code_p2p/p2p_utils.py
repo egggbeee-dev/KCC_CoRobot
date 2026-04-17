@@ -204,6 +204,26 @@ def compute_plan_uncertainty(step_uncertainties: List[float]) -> float:
     )
 
 
+def compute_joint_uncertainty(joint: List[Any]) -> float:
+    """Joint plan 전체 불확실성 (메트릭용).
+    cross-agent PASS/receive step에 가중치 1.5 부여."""
+    if not joint:
+        return 0.0
+    id_to_agent = {s["step_id"]: s.get("agent_id") for s in joint}
+    total, count = 0.0, 0
+    for s in joint:
+        u = float(s.get("uncertainty", 0.2))
+        # cross-agent dep 있으면 가중치
+        has_cross = any(
+            id_to_agent.get(d) and id_to_agent[d] != s.get("agent_id")
+            for d in s.get("depends_on", [])
+        )
+        w = 1.5 if (has_cross or s.get("handoff_type") == "PASS") else 1.0
+        total += u * w
+        count += w
+    return round(total / count, 3) if count > 0 else 0.0
+
+
 # ── 출력 헬퍼 (verifier 제거 후 여기로 이동) ──────────────────────────────────
 
 def format_joint_plan(plan: List[Dict]) -> str:
