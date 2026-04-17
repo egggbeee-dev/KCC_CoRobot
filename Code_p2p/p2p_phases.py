@@ -101,7 +101,7 @@ EXAMPLE 1 — kitchen agent, task "prepare for sick person staying home":
 {
   "room_type": "kitchen",
   "observation": "Kitchen with fruits on island, bread basket, coffee maker, kettle.",
-  "obs_scope": "island, counter, sink, fruits, bread basket, coffee maker, kettle, mugs",
+  "obs_scope": "island, counter, sink, stove, fruits, bread basket, coffee maker, kettle, mugs",
   "can_do": [
     "slice fruit from island and place on plate",
     "arrange bread from basket onto plate",
@@ -129,11 +129,11 @@ EXAMPLE 2 — bedroom agent, same task:
 <JSON>
 {
   "room_type": "bedroom",
-  "observation": "Bedroom with bed, white pillow, blanket, lamp, alarm clock on dresser.",
+  "observation": "Bedroom with bed, pillow, blanket, lamp, dresser, alarm clock.",
   "obs_scope": "bed, pillow, blanket, lamp, dresser, alarm clock, window, curtain",
   "can_do": [
     "fluff pillow and arrange on bed",
-    "fold back blanket for easy access",
+    "fold blanket for easy access",
     "dim lamp for restful lighting",
     "clear dresser surface for tray placement",
     "set alarm clock for medication reminder"
@@ -144,7 +144,7 @@ EXAMPLE 2 — bedroom agent, same task:
   ],
   "conf": {
     "fluff pillow and arrange on bed": 0.95,
-    "fold back blanket for easy access": 0.95,
+    "fold blanket for easy access": 0.95,
     "dim lamp for restful lighting": 0.9,
     "clear dresser surface for tray placement": 0.9,
     "set alarm clock for medication reminder": 0.85
@@ -174,14 +174,11 @@ RULES:
 4. can_provide: items the OTHER AGENT genuinely needs from you to complete THEIR role.
    - Ask: "Without this from me, can the other agent still do their job?"
    - If YES → write []
-   - If NO  → include it (must be physically portable: tray, drink, document, tool)
-   - Do NOT list items just because you can carry them (laptop, books, furniture → NO)
-   - Maximum 1 item. Write [] when unsure.
-5. need_from_other: 1–2 specific things you CANNOT do without from the other agent.
-   Must be physically deliverable items. Do NOT list confirmations or vague requests.
-   Write [] if you can complete your role independently.
-6. COLLABORATION: the two agents together must achieve the global task goal.
-   Think about what YOUR room contributes and what the OTHER room contributes.
+   - If NO  → include it (must be physically portable: tray, drink, document)
+   - Default to [] when unsure. Maximum 1 item.
+5. need_from_other: specific items you CANNOT complete your role without.
+   Must be physically deliverable. Write [] if you can work independently.
+6. Think about task roles: kitchen prepares food/drinks, bedroom sets up rest/work space.
 7. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
@@ -295,47 +292,34 @@ def phase1_offer(
 
 _P2_EXAMPLE = """
 EXAMPLE — kitchen agent, task "prepare for sick person":
-Context: can_provide=["light meal tray"], other agent needs=["light meal tray from kitchen"]
+Context: can_provide=["light meal tray"], other needs=["light meal tray from kitchen"]
 <JSON>
-{
-  "plan_steps": [
-    {"step_id":1,"time_min":1,"action":"slice apple and arrange on plate",
-     "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
-     "uncertainty":0.1,"notes":""},
-    {"step_id":2,"time_min":2,"action":"arrange bread from basket onto plate",
-     "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
-     "uncertainty":0.1,"notes":""},
-    {"step_id":3,"time_min":3,"action":"pour hot water from kettle into mug",
-     "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
-     "uncertainty":0.1,"notes":""},
-    {"step_id":4,"time_min":4,"action":"carry meal tray to kitchen doorway for agent_B pickup",
-     "preconditions":["tray ready"],"depends_on":[1,2,3],
-     "handoff_type":"PASS","target_agent":"agent_B","uncertainty":0.15,
-     "notes":"meal tray ready at doorway"}
-  ]
-}
+{"plan_steps": [
+  {"step_id":1,"time_min":1,"action":"slice apple and arrange on plate",
+   "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+  {"step_id":2,"time_min":2,"action":"arrange bread from basket onto tray",
+   "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+  {"step_id":3,"time_min":3,"action":"pour hot water into mug and place on tray",
+   "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+  {"step_id":4,"time_min":4,"action":"carry meal tray to kitchen doorway for agent_B pickup",
+   "preconditions":["tray ready"],"depends_on":[1,2,3],
+   "handoff_type":"PASS","target_agent":"agent_B","uncertainty":0.15,"notes":"meal tray at doorway"}
+]}
 </JSON>
 
 EXAMPLE — bedroom agent, same task:
-Context: can_provide=[], other agent (kitchen) will PASS meal tray to you
+Context: can_provide=[], kitchen agent will PASS meal tray to you
 <JSON>
-{
-  "plan_steps": [
-    {"step_id":101,"time_min":1,"action":"fluff pillow and arrange on bed",
-     "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
-     "uncertainty":0.1,"notes":""},
-    {"step_id":102,"time_min":2,"action":"clear dresser surface for tray placement",
-     "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
-     "uncertainty":0.1,"notes":""},
-    {"step_id":103,"time_min":3,"action":"dim lamp for restful lighting",
-     "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,
-     "uncertainty":0.1,"notes":""},
-    {"step_id":104,"time_min":5,"action":"receive meal tray from kitchen and place on dresser",
-     "preconditions":["kitchen agent delivered tray"],"depends_on":[],
-     "handoff_type":null,"target_agent":null,"uncertainty":0.15,
-     "notes":"wait for kitchen agent PASS"}
-  ]
-}
+{"plan_steps": [
+  {"step_id":101,"time_min":1,"action":"fluff pillow and arrange on bed",
+   "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+  {"step_id":102,"time_min":2,"action":"clear dresser surface for tray placement",
+   "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+  {"step_id":103,"time_min":3,"action":"dim lamp for restful lighting",
+   "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+  {"step_id":104,"time_min":5,"action":"receive meal tray from kitchen and place on dresser",
+   "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.15,"notes":"wait for kitchen PASS"}
+]}
 </JSON>
 """.strip()
 
@@ -383,30 +367,25 @@ Global task: "{task}"
 
 {_P2_HANDOFF_RULES}
 
-Before writing the plan, think:
-1. FINAL GOAL: What END STATE does this task want to achieve?
+Think before writing:
+1. FINAL GOAL: What END STATE does this task want?
 2. MY ROLE: What is MY specific contribution from {my.room_type}?
-3. FOR OTHER: Does the other agent need something I can physically provide?
-4. FROM OTHER: Do I need something from the other agent to complete my role?
+3. GIVE: Does the other agent need something I can physically provide? (→ PASS)
+4. RECEIVE: Do I need something from the other agent? (→ RECEIVE step)
 
 PLANNING RULES:
-1. Steps ONLY in your room ({my.room_type}), using ONLY visible objects.
-2. Generate ONLY steps that directly serve MY ROLE. 2–4 steps is enough.
-   Do NOT add filler steps.
+1. Steps ONLY in {my.room_type}, using ONLY visible objects.
+2. 2–5 steps only. No filler steps.
 3. PASS — if can_provide is NOT empty:
-   - 1–2 prep steps, then ONE PASS: "carry [item] to {my.room_type} doorway for [agent] pickup"
-   - depends_on=[prep step ids]
+   - Add 1–2 prep steps first (slice, arrange, pour, etc.)
+   - Add ONE PASS step: "carry [item] to {my.room_type} doorway for [agent] pickup"
+   - CRITICAL: PASS step MUST have depends_on=[prep step ids]
 4. RECEIVE — if need_from_other is NOT empty:
    - Add: "receive [item] from other room and place at [specific location]"
-5. INFORM — only if other agent needs to know your status to proceed
+   - Leave depends_on=[] (system links automatically)
+5. INFORM — only when other agent must know your status to proceed
 6. Return ONLY valid JSON inside <JSON> tags.
 
-<JSON>
-{{
-  "plan_steps": [
-    {{"step_id":1,"time_min":0,"action":"verb + specific object",
-      "preconditions":[],"depends_on":[],"handoff_type":null,
-      "target_agent":null,"uncertainty":0.1,"notes":""}}
   ]
 }}
 </JSON>"""
@@ -528,8 +507,17 @@ def _normalize_pass(steps: List[PlanStep]) -> List[PlanStep]:
             s.handoff_type = None; s.target_agent = None; continue
 
         if not s.depends_on:
-            print(f"  [NORM] step{s.step_id} PASS removed: no depends_on")
-            s.handoff_type = None; s.target_agent = None; continue
+            # deps 없으면 같은 agent의 이전 prep step 자동 연결
+            prep = [p for p in steps
+                    if p.step_id < s.step_id
+                    and p.agent_id == s.agent_id
+                    and p.handoff_type is None]
+            if prep:
+                s.depends_on = [p.step_id for p in prep]
+                print(f"  [NORM] step{s.step_id} PASS auto-linked deps={s.depends_on}")
+            else:
+                print(f"  [NORM] step{s.step_id} PASS removed: no depends_on")
+                s.handoff_type = None; s.target_agent = None; continue
 
         if not [d for d in s.depends_on if d in my_ids]:
             print(f"  [NORM] step{s.step_id} PASS removed: deps not in own plan")
@@ -710,83 +698,73 @@ def _ensure_pass(
 
     # A→B
     plan_a, plan_b = _inject(plan_a, plan_b, offer_a, offer_b, "agent_A", "agent_B")
-    # B→A: B의 can_provide가 A의 need_from_other와 실제 매칭될 때만
-    b_can_for_a = [
-        p for p in offer_b.can_provide
-        if _is_passable(p)
-        and any(_fuzzy_match_soft(p, n) for n in offer_a.need_from_other)
-    ]
-    if b_can_for_a:
+    # B→A: A의 need_from_other가 물리적 아이템인 경우만
+    _INFO_KW = {"confirmation","confirm","clear","ready","status",
+                "notify","check","verified","done","complete","that"}
+    a_needs_physical = any(
+        not (_kw(n) & _INFO_KW)
+        for n in offer_a.need_from_other
+    )
+    if a_needs_physical:
         plan_b, plan_a = _inject(plan_b, plan_a, offer_b, offer_a, "agent_B", "agent_A")
-        print(f"  [ENSURE] B→A active: {b_can_for_a}")
     else:
-        print(f"  [ENSURE] B→A skipped: nothing A actually needs from B")
+        print(f"  [ENSURE] B→A skipped: A only needs confirmation-type info")
     return plan_a, plan_b
 
 
-def _build_phase2b_prompt(
-    my: Offer, other: Offer,
-    draft_other: LocalPlan, task: str,
-) -> str:
-    """Phase 2b: 상대방 draft plan을 보고 최종 plan 생성."""
-    other_steps_summary = []
-    for i, s in enumerate(draft_other.steps, 1):
+def _build_phase2b_prompt(my: Offer, other: Offer, draft: LocalPlan, task: str) -> str:
+    """Phase 2b: 상대방 draft를 보고 최종 plan 생성."""
+    other_summary = []
+    for i, s in enumerate(draft.steps, 1):
         line = f"  Step {i}: {s.action}"
         if s.handoff_type == "PASS":
             line += f"  [→ PASS to {s.target_agent}]"
         elif s.handoff_type == "INFORM":
             line += f"  [→ NOTIFY {s.target_agent}]"
-        other_steps_summary.append(line)
+        other_summary.append(line)
 
     passable = [p for p in my.can_provide if _is_passable(p)]
 
-    return f"""You are the {my.room_type} agent ({my.agent_id}).
+    return f"""You are {my.agent_id} ({my.room_type}).
 Global task: "{task}"
 
-YOUR capabilities:
-- can_provide: {json.dumps(passable, ensure_ascii=False)}
-- need_from_other: {json.dumps(my.need_from_other, ensure_ascii=False)}
+YOUR can_provide: {json.dumps(passable, ensure_ascii=False)}
+YOUR need_from_other: {json.dumps(my.need_from_other, ensure_ascii=False)}
 
 {other.agent_id} ({other.room_type}) DRAFT PLAN:
-{chr(10).join(other_steps_summary) if other_steps_summary else "  (no steps)"}
+{chr(10).join(other_summary) if other_summary else "  (no steps yet)"}
 
-Now generate YOUR FINAL plan. Read the other agent's draft carefully first.
+Generate YOUR FINAL plan.
 
-STEP 1 — Check for incoming PASS:
-  Does {other.agent_id}'s draft have a PASS step targeting {my.agent_id}?
+CHECK 1 — Incoming PASS:
+  Does {other.agent_id}'s draft have a "[→ PASS to {my.agent_id}]" step?
   If YES → you MUST add a RECEIVE step:
-    action: "receive [exact item name] from {other.room_type} and place at [specific location in your room]"
-    depends_on: [] (system will link automatically)
+    action: "receive [item] from {other.room_type} and place at [specific location]"
+    depends_on: [] (system links automatically)
 
-STEP 2 — Check your outgoing PASS:
-  Is your can_provide non-empty?
-  If YES → add prep steps + PASS step "carry [item] to {my.room_type} doorway for {other.agent_id} pickup"
+CHECK 2 — Outgoing PASS:
+  Is YOUR can_provide non-empty?
+  If YES → add prep steps, then PASS step with depends_on=[prep_step_ids]
 
-STEP 3 — Remove duplicates:
-  Are any of your planned actions already done by the other agent?
-  If YES → skip those actions
+CHECK 3 — No duplicates:
+  Skip actions already covered by {other.agent_id}'s draft.
 
-EXAMPLE — bedroom agent seeing kitchen draft with PASS:
-Kitchen draft has: "carry meal tray to kitchen doorway for agent_B pickup [PASS]"
-Your correct response:
-  Step 1: fluff pillow on bed
-  Step 2: clear dresser surface
-  Step 3: receive meal tray from kitchen and place on dresser  ← RECEIVE step
+EXAMPLE:
+  Other draft has: "carry meal tray to kitchen doorway for agent_B pickup [→ PASS to agent_B]"
+  Your correct response includes:
+    "receive meal tray from kitchen and place on dresser"  ← RECEIVE (mandatory)
 
 RULES:
-1. Steps ONLY in {my.room_type}, using ONLY visible objects.
-2. 2–4 steps. No filler steps.
-3. If incoming PASS exists, RECEIVE step is mandatory.
-4. Return ONLY valid JSON inside <JSON> tags.
+1. Steps ONLY in {my.room_type}, using ONLY visible objects. 2–4 steps.
+2. PASS step MUST have depends_on=[prep_step_ids].
+3. Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
-{{
-  "plan_steps": [
-    {{"step_id":1,"time_min":1,"action":"verb + specific object",
-      "preconditions":[],"depends_on":[],"handoff_type":null,
-      "target_agent":null,"uncertainty":0.1,"notes":""}}
-  ]
-}}
+{{"plan_steps": [
+  {{"step_id":1,"time_min":1,"action":"verb + visible object",
+    "preconditions":[],"depends_on":[],"handoff_type":null,
+    "target_agent":null,"uncertainty":0.1,"notes":""}}
+]}}
 </JSON>"""
 
 
@@ -797,40 +775,32 @@ def phase2_local_plan(
     verbose: str = "full",
 ) -> Tuple[LocalPlan, LocalPlan]:
 
-    # ── Phase 2a: 각자 draft plan 생성 ──────────────────────────────────────
+    # Phase 2a: 각자 독립 draft
     _banner("PHASE 2a — DRAFT PLANNING")
-    prompt_a = _build_phase2_prompt(offer_a, offer_b, task, use_offer)
-    prompt_b = _build_phase2_prompt(offer_b, offer_a, task, use_offer)
-
-    results_a = _run_parallel([(img_a, prompt_a, True), (img_b, prompt_b, True)])
-    raw_a, logp_a = results_a[0]
-    raw_b, logp_b = results_a[1]
-
-    draft_a = _parse_local_plan(raw_a, logp_a, offer_a, step_offset=0)
-    draft_b = _parse_local_plan(raw_b, logp_b, offer_b, step_offset=AGENT_B_STEP_OFFSET)
-
+    pa = _build_phase2_prompt(offer_a, offer_b, task, use_offer)
+    pb = _build_phase2_prompt(offer_b, offer_a, task, use_offer)
+    res_a = _run_parallel([(img_a, pa, True), (img_b, pb, True)])
+    raw_a, lp_a = res_a[0]
+    raw_b, lp_b = res_a[1]
+    draft_a = _parse_local_plan(raw_a, lp_a, offer_a, step_offset=0)
+    draft_b = _parse_local_plan(raw_b, lp_b, offer_b, step_offset=AGENT_B_STEP_OFFSET)
     if verbose == "full":
-        _log("A DRAFT", raw_a)
-        _log("B DRAFT", raw_b)
+        _log("A DRAFT", raw_a); _log("B DRAFT", raw_b)
     print(f"  A draft: {len(draft_a.steps)} steps | B draft: {len(draft_b.steps)} steps")
 
-    # ── Phase 2b: 상대방 draft 보고 최종 plan 생성 ────────────────────────────
+    # Phase 2b: 상대방 draft 보고 최종 plan
     _banner("PHASE 2b — FINAL PLANNING (mutual awareness)")
-    prompt_a2 = _build_phase2b_prompt(offer_a, offer_b, draft_b, task)
-    prompt_b2 = _build_phase2b_prompt(offer_b, offer_a, draft_a, task)
-
-    results_b = _run_parallel([(img_a, prompt_a2, True), (img_b, prompt_b2, True)])
-    raw_a2, logp_a2 = results_b[0]
-    raw_b2, logp_b2 = results_b[1]
-
+    pa2 = _build_phase2b_prompt(offer_a, offer_b, draft_b, task)
+    pb2 = _build_phase2b_prompt(offer_b, offer_a, draft_a, task)
+    res_b = _run_parallel([(img_a, pa2, True), (img_b, pb2, True)])
+    raw_a2, lp_a2 = res_b[0]
+    raw_b2, lp_b2 = res_b[1]
     if verbose == "full":
-        _log("A FINAL RAW", raw_a2)
-        _log("B FINAL RAW", raw_b2)
+        _log("A FINAL RAW", raw_a2); _log("B FINAL RAW", raw_b2)
+    plan_a = _parse_local_plan(raw_a2, lp_a2, offer_a, step_offset=0)
+    plan_b = _parse_local_plan(raw_b2, lp_b2, offer_b, step_offset=AGENT_B_STEP_OFFSET)
 
-    plan_a = _parse_local_plan(raw_a2, logp_a2, offer_a, step_offset=0)
-    plan_b = _parse_local_plan(raw_b2, logp_b2, offer_b, step_offset=AGENT_B_STEP_OFFSET)
-
-    # ── Phase 2c: rule-based coordination ────────────────────────────────────
+    # Phase 2c: rule-based PASS 보완
     if use_offer:
         _banner("PHASE 2c — HANDOFF COORDINATION (rule-based)")
         plan_a, plan_b = _ensure_pass(plan_a, plan_b, offer_a, offer_b)
@@ -1079,39 +1049,18 @@ LOCKED (do not modify): {sorted(locked) or '(none)'}
 {other_id}'s previous proposals: {prev_text}
 
 RULES:
-1. Fix YOUR OWN steps first. One proposal per conflict.
-2. REDUNDANCY: delete the duplicate from YOUR plan (field="delete").
-3. OBSERVABILITY: the step references invisible objects.
-   → field="delete" to remove, OR field="action" to rewrite using only visible objects.
-4. DEPENDENCY: your step must wait for another agent's PASS.
-   → field="depends_on", new_value=[pass_step_id]
-5. CANNOT_DO: you planned something you cannot do.
-   → field="delete" to remove it.
-6. To ACCEPT the other agent's proposal: reason="ACCEPT"
-7. If NO conflicts remain or nothing to fix: return {{"proposals": []}}
-8. Allowed fields: "action" | "depends_on" | "delete"
-
-EXAMPLES:
-Delete duplicate:
-  {{"step_id":102,"agent_id":"{my_agent}","field":"delete","new_value":"true",
-    "reason":"REDUNDANCY: other agent already does this"}}
-
-Fix invisible object:
-  {{"step_id":103,"agent_id":"{my_agent}","field":"action",
-    "new_value":"dim lamp for restful lighting",
-    "reason":"OBSERVABILITY: curtains not visible, rewriting with visible lamp"}}
-
-Accept other's proposal:
-  {{"step_id":104,"agent_id":"agent_B","field":"delete","new_value":"true",
-    "reason":"ACCEPT"}}
-
-No conflict:
-  {{"proposals": []}}
+1. Fix YOUR steps first. One proposal per conflict.
+2. DEPENDENCY: add depends_on + shift time_min after the PASS step.
+3. REDUNDANCY: delete one duplicate (field="delete").
+4. TEMPORAL: shift time_min to avoid overlap.
+5. OBSERVABILITY: delete or fix the step.
+6. To ACCEPT other's proposal: reason="ACCEPT".
+7. Allowed fields: "time_min" | "action" | "depends_on" | "delete"
 
 <JSON>
 {{"proposals":[
-  {{"step_id":103,"agent_id":"{my_agent}","field":"delete","new_value":"true",
-    "reason":"REDUNDANCY: already handled by other agent"}}
+  {{"step_id":103,"agent_id":"{my_agent}","field":"depends_on",
+    "new_value":"[5]","reason":"DEPENDENCY: must wait for PASS step 5"}}
 ]}}
 </JSON>"""
 
@@ -1377,44 +1326,40 @@ _HQ_TEMPLATES: Dict[str, str] = {
 def _generate_hq_question(
     trigger_type: str, detail: str,
     offer_a: Offer, offer_b: Offer, img: str,
-    steps_a: List[Dict] = None, steps_b: List[Dict] = None,
 ) -> str:
     template = _HQ_TEMPLATES.get(trigger_type, "How should the agents handle this?")
 
-    # conflict 타입별 명확한 지시 (step 번호 아닌 액션 내용으로)
+    # conflict 타입별 directive — step 번호 대신 액션 내용 설명
     if trigger_type == "OBSERVABILITY":
         directive = (
-            f"In the {offer_b.room_type}, the action '{detail[:120]}' "
-            f"references objects not visible in the room image. "
-            f"Should this action be removed, or replaced with something visible?"
+            f"An action references objects not visible in the room image: '{detail[:100]}'. "
+            f"Should this action be DELETED, or MODIFIED to use only visible objects?"
         )
     elif trigger_type == "REDUNDANCY":
         directive = (
-            f"Both agents are planning to do similar things: {detail[:150]}. "
-            f"Which agent should handle this, and which should skip it?"
+            f"Two agents planned the same action: '{detail[:120]}'. "
+            f"Which agent should handle this, and which should remove their duplicate?"
         )
     elif trigger_type == "DEPENDENCY":
         directive = (
-            f"A handoff is planned but the receiving agent has no step to collect it: "
-            f"{detail[:150]}. Should the receiving agent add a pickup step?"
+            f"A handoff was planned but the receiving agent has no step to collect it: '{detail[:120]}'. "
+            f"Should the receiving agent add a pickup step?"
         )
     elif trigger_type == "UNMATCHED":
         directive = (
-            f"One agent needs something that neither agent can provide: {detail[:150]}. "
-            f"How should this unmet need be handled?"
+            f"An agent needs something neither agent can provide: '{detail[:120]}'. "
+            f"Can this need be fulfilled, or should the plan proceed without it?"
         )
     else:
         directive = detail[:200]
 
-    prompt = f"""You are coordinating two home agents working on: "{trigger_type}".
+    prompt = f"""Two home agents are planning together.
 Agent A is in the {offer_a.room_type}. Agent B is in the {offer_b.room_type}.
 
-Situation: {directive}
+Issue: {directive}
 
-Write ONE clear, specific question for the human operator.
-- Describe WHAT the action is (not step numbers)
-- Ask for a YES/NO or concrete decision
-- One sentence only. No preamble."""
+Write ONE clear YES/NO question for the human operator.
+Describe what the action IS (not step numbers). One sentence only."""
 
     try:
         q, _ = run_vlm(img, prompt)
@@ -1423,7 +1368,7 @@ Write ONE clear, specific question for the human operator.
             return q
     except Exception as e:
         print(f"  [HQ VLM error] {e}")
-    return f"{template} Context: {directive[:100]}"
+    return f"{template} — {directive[:80]}"
 
 
 def phase6_human_query(
@@ -1530,76 +1475,53 @@ def phase_finalize(
             print(f"    Q: {q[:65]}...")
             print(f"    A: {a}")
 
-    # HQ 답변 반영 — GPT-4o로 답변 의도 해석 후 플랜 수정
-    if human_answers:
-        for q, a in human_answers.items():
-            a_lower = a.lower().strip()
-            a_words = set(a_lower.split())
+    # HQ 답변 반영 — 안전하고 단순한 로직
+    _EXPLICIT_DELETE = {"delete", "remove", "없애", "제거", "삭제"}
+    _EXPLICIT_ADD    = {"yes", "add", "receive", "네", "추가"}
 
-            # 1. 명확한 삭제 힌트
-            _DELETE = {"delete","remove","skip","drop","no","false","없애","제거","삭제"}
-            if a_words & _DELETE:
-                # 질문에서 액션 내용 기반으로 매칭
-                for plan in [steps_a, steps_b]:
-                    to_remove = []
-                    for s in plan:
-                        act = s.get("action","").lower()
-                        # 질문에 해당 액션 키워드가 있으면 삭제
-                        if any(w in q.lower() for w in act.split()[:4] if len(w) > 3):
-                            to_remove.append(s["step_id"])
-                    for sid in to_remove:
+    for q, a in human_answers.items():
+        a_lower = a.lower().strip()
+        a_words = set(a_lower.split())
+        q_lower = q.lower()
+
+        # OBSERVABILITY → "delete" 명시적으로 말할 때만 삭제
+        if "observability" in q_lower or "not visible" in q_lower or "invisible" in q_lower:
+            if a_words & _EXPLICIT_DELETE or a_lower in ("no", "delete", "remove"):
+                # obs_scope 위반 스텝 제거
+                pool_a = set(re.findall(r"\w+", offer_a.obs_scope.lower()))
+                pool_b = set(re.findall(r"\w+", offer_b.obs_scope.lower()))
+                for plan, pool in [(steps_a, pool_a), (steps_b, pool_b)]:
+                    to_rm = [s["step_id"] for s in plan
+                             if not s.get("handoff_type")
+                             and not (set(re.findall(r"\w+", s.get("action","").lower())) & pool)]
+                    for sid in to_rm[:1]:  # 최대 1개만
                         plan[:] = [s for s in plan if s.get("step_id") != sid]
-                        print(f"  [FINALIZE] step{sid} removed per HQ answer: '{a[:40]}'")
+                        print(f"  [FINALIZE] obs-violation step{sid} removed per HQ")
 
-            # 2. 수신 스텝 추가 힌트
-            _ADD_RECEIVE = {"yes","add","receive","pick","collect","네","추가","받아"}
-            if a_words & _ADD_RECEIVE and "receive" in q.lower():
-                # B 플랜에 receive step이 없으면 추가
-                has_receive = any(
-                    "receive" in s.get("action","").lower()
-                    for s in steps_b
-                )
-                if not has_receive:
-                    # PASS step 찾기
-                    pass_steps = [s for s in steps_a if s.get("handoff_type") == "PASS"]
-                    if pass_steps:
-                        ps = pass_steps[0]
-                        new_sid = max(s["step_id"] for s in steps_a + steps_b) + 1
-                        import re as _re
-                        m = _re.search(r"carry (.+?) (?:to|for)", ps.get("action",""), _re.I)
-                        item = m.group(1).strip() if m else "item"
-                        # 답변에서 위치 추출 (있으면)
-                        location = "in room"
-                        for loc in ["table","dresser","desk","bedside","counter","sofa"]:
-                            if loc in a_lower:
-                                location = f"on {loc}"
-                                break
-                        recv_action = f"receive {item} from kitchen and place {location}"
-                        steps_b.append({
-                            "step_id":      new_sid,
-                            "time_min":     ps.get("time_min", 0) + 1,
-                            "room":         steps_b[0].get("room","bedroom") if steps_b else "bedroom",
-                            "agent_id":     "agent_B",
-                            "action":       recv_action,
-                            "preconditions":[],
-                            "depends_on":   [ps["step_id"]],
-                            "handoff_type": None,
-                            "target_agent": None,
-                            "uncertainty":  0.15,
-                            "notes":        "added per HQ answer",
-                        })
-                        print(f"  [FINALIZE] receive step added per HQ answer: '{recv_action}'")
-
-            # 3. 답변이 위치/방법을 알려주는 경우 → 기존 스텝 action 수정
-            for loc in ["table","dresser","desk","bedside","counter","sofa","floor"]:
-                if loc in a_lower:
-                    for s in steps_b:
-                        act = s.get("action","")
-                        if "receive" in act.lower() or "place" in act.lower():
-                            if "in room" in act or "into room" in act:
-                                s["action"] = act.replace("in room", f"on {loc}").replace("into room", f"on {loc}")
-                                print(f"  [FINALIZE] step location updated to '{loc}' per HQ answer")
-                    break
+        # DEPENDENCY → "yes/add" 말할 때 receive step 추가
+        elif "receive" in q_lower or "pickup" in q_lower or "dependency" in q_lower:
+            if a_words & _EXPLICIT_ADD:
+                pass_steps = [s for s in steps_a if s.get("handoff_type") == "PASS"]
+                has_recv   = any("receive" in s.get("action","").lower() for s in steps_b)
+                if pass_steps and not has_recv:
+                    ps = pass_steps[0]
+                    m  = re.search(r"carry (.+?) (?:to|for)", ps.get("action",""), re.I)
+                    item = m.group(1).strip() if m else "item"
+                    new_sid = max(s["step_id"] for s in steps_a + steps_b) + 1
+                    steps_b.append({
+                        "step_id":      new_sid,
+                        "time_min":     ps.get("time_min",0) + 1,
+                        "room":         steps_b[0].get("room","bedroom") if steps_b else "bedroom",
+                        "agent_id":     "agent_B",
+                        "action":       f"receive {item} from kitchen and place in room",
+                        "preconditions": [],
+                        "depends_on":   [ps["step_id"]],
+                        "handoff_type": None,
+                        "target_agent": None,
+                        "uncertainty":  0.15,
+                        "notes":        "added per HQ answer",
+                    })
+                    print(f"  [FINALIZE] receive step added: 'receive {item}' per HQ")
 
     merged = list(steps_a) + list(steps_b)
     merged.sort(key=lambda s: (s.get("time_min", 0), s.get("step_id", 0)))
@@ -1631,7 +1553,6 @@ def phase_finalize(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def format_joint_plan(plan: List[Dict], task: str = "") -> str:
-    """순서 기반 자연어 출력. 시간 없음. cross-agent deps는 한국어로."""
     if not plan:
         return "  (empty)"
 
@@ -1640,88 +1561,60 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     steps_b = [s for s in plan if s.get("agent_id") == "agent_B"]
     room_a  = steps_a[0].get("room", "Room A") if steps_a else "Room A"
     room_b  = steps_b[0].get("room", "Room B") if steps_b else "Room B"
+    n_pass  = sum(1 for s in plan if s.get("handoff_type") == "PASS")
+    n_info  = sum(1 for s in plan if s.get("handoff_type") == "INFORM")
 
-    n_pass   = sum(1 for s in plan if s.get("handoff_type") == "PASS")
-    n_inform = sum(1 for s in plan if s.get("handoff_type") == "INFORM")
-
-    SEP  = "━" * 68
-    SEP2 = "─" * 68
-
+    SEP = "━" * 68
     lines: List[str] = [SEP]
-    task_str = (task[:60] + "…") if len(task) > 60 else task
-    if task_str:
-        lines.append(f'  "{task_str}"')
-    lines.append(
-        f"  {room_a.upper()} (agent_A)  +  {room_b.upper()} (agent_B)"
-    )
-    lines.append(
-        f"  총 {len(plan)}개 스텝  |  물리 전달 {n_pass}회  |  상태 알림 {n_inform}회"
-    )
+    if task:
+        lines.append(f'  "{(task[:60]+"…") if len(task)>60 else task}"')
+    lines.append(f"  {room_a.upper()} (agent_A)  +  {room_b.upper()} (agent_B)")
+    lines.append(f"  총 {len(plan)}개 스텝  |  물리 전달 {n_pass}회  |  상태 알림 {n_info}회")
     lines.append(SEP)
     lines.append("")
 
-    sorted_plan = sorted(plan, key=lambda s: (s.get("time_min", 0), s.get("step_id", 0)))
-
-    for idx, s in enumerate(sorted_plan, start=1):
-        agent  = s.get("agent_id", "?")
-        room   = s.get("room", "?")
-        action = s.get("action", "")
+    sorted_plan = sorted(plan, key=lambda s: (s.get("time_min",0), s.get("step_id",0)))
+    for idx, s in enumerate(sorted_plan, 1):
+        agent  = s.get("agent_id","?")
+        room   = s.get("room","?")
+        action = s.get("action","")
         ht     = s.get("handoff_type")
-        tgt    = s.get("target_agent", "")
-        deps   = s.get("depends_on", [])
+        tgt    = s.get("target_agent","")
+        deps   = s.get("depends_on",[])
 
-        if ht == "PASS":
-            suffix = f"  ──► [{tgt}에게 전달]"
-        elif ht == "INFORM":
-            suffix = f"  ~~► [{tgt}에게 알림]"
-        else:
-            suffix = ""
+        suffix = ""
+        if ht == "PASS":   suffix = f"  ──► [{tgt}에게 전달]"
+        elif ht == "INFORM": suffix = f"  ~~► [{tgt}에게 알림]"
 
         lines.append(f"  {idx:>2}. [{room}] [{agent}]")
         lines.append(f"      {action}{suffix}")
 
-        # cross-agent deps만 자연어로
         cross = [id_to_step[d] for d in deps
                  if d in id_to_step and id_to_step[d].get("agent_id") != agent]
-        if cross:
-            for dep in cross:
-                dep_act   = dep["action"]
-                dep_short = (dep_act[:40] + "…") if len(dep_act) > 40 else dep_act
-                dep_agent = dep.get("agent_id", "?")
-                lines.append(f"      ({dep_agent}의 \"{dep_short}\" 완료 후 실행)")
-
+        for dep in cross:
+            da = dep["action"]
+            ds = (da[:40]+"…") if len(da)>40 else da
+            lines.append(f"      ({dep.get('agent_id','?')}의 \"{ds}\" 완료 후 실행)")
         lines.append("")
 
-    # COORDINATION SUMMARY
     coord: List[str] = []
     for s in sorted_plan:
         ht = s.get("handoff_type")
-        if not ht:
-            continue
-        src   = s.get("agent_id", "?")
-        tgt   = s.get("target_agent", "?")
-        act   = s.get("action", "")
-        short = (act[:48] + "…") if len(act) > 48 else act
-        recv  = [r for r in plan
-                 if s["step_id"] in r.get("depends_on", [])
-                 and r.get("agent_id") != src]
-
+        if not ht: continue
+        src = s.get("agent_id","?"); tgt = s.get("target_agent","?")
+        act = s.get("action","")
+        short = (act[:48]+"…") if len(act)>48 else act
+        recv = [r for r in plan if s["step_id"] in r.get("depends_on",[]) and r.get("agent_id")!=src]
         if ht == "PASS":
-            recv_act = recv[0]["action"] if recv else "수신 스텝 없음"
-            recv_short = (recv_act[:40] + "…") if len(recv_act) > 40 else recv_act
-            coord.append(f"  {src}  ──[전달]──►  {tgt}")
-            coord.append(f"    전달 액션: \"{short}\"")
-            coord.append(f"    수신 액션: \"{recv_short}\"")
-            coord.append("")
+            ra = recv[0]["action"] if recv else "수신 스텝 없음"
+            rs = (ra[:40]+"…") if len(ra)>40 else ra
+            coord += [f"  {src}  ──[전달]──►  {tgt}", f"    전달: \"{short}\"", f"    수신: \"{rs}\"", ""]
         elif ht == "INFORM":
-            coord.append(f"  {src}  ~~[알림]~~►  {tgt}  |  \"{short}\"")
-            coord.append("")
+            coord += [f"  {src}  ~~[알림]~~►  {tgt}  |  \"{short}\"", ""]
 
     if coord:
-        lines.append(SEP2)
-        lines.append("  COORDINATION SUMMARY")
-        lines.append("")
+        lines.append("─"*68)
+        lines.append("  COORDINATION SUMMARY"); lines.append("")
         lines.extend(coord)
     lines.append(SEP)
-
     return "\n".join(lines)
