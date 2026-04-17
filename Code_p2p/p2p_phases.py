@@ -1426,14 +1426,14 @@ def phase6_human_query(
         if any(kw in need.lower() for kw in _SOLVABLE_KW):
             continue
         if not any(_fuzzy_match_soft(need, p) for p in all_provides):
-            # 진짜 UNMATCHED
-            from p2p_models import ConflictEntry, ConflictType
-            hq_candidates.append(ConflictEntry(
-                conflict_type=ConflictType.UNMATCHED,
-                step_ids=[], agent_ids=[],
-                description=f"Neither agent can provide: '{need}'",
-                fix_hint="Ask human for clarification.",
-            ))
+            # 진짜 UNMATCHED — ConflictType에 없으므로 임시 객체로 처리
+            class _FakeConflict:
+                conflict_type = "UNMATCHED"
+                description   = f"Neither agent can provide: '{need}'"
+                step_ids      = []
+                agent_ids     = []
+                fix_hint      = "Ask human for clarification."
+            hq_candidates.append(_FakeConflict())
 
     if not hq_candidates:
         print("  No HQ needed — all conflicts solvable by agents.")
@@ -1450,8 +1450,9 @@ def phase6_human_query(
 
     for i, c_entry in enumerate(hq_candidates[:HQ_TOP_K], 1):
         print(f"\n  Generating Q{i}...", end=" ", flush=True)
+        ctype = str(c_entry.conflict_type) if isinstance(c_entry.conflict_type, str)                 else c_entry.conflict_type
         q = _generate_hq_question(
-            str(c_entry.conflict_type), c_entry.description,
+            ctype, c_entry.description,
             offer_a, offer_b, img_a,
         )
         print("done")
