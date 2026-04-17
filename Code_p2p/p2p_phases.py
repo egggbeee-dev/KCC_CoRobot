@@ -344,7 +344,7 @@ KEY: "carry X to doorway" → PASS | "notify agent_B" → INFORM | all others �
 """.strip()
 
 
-def _build_phase2_prompt(my: Offer, other: Offer, task: str, use_offer: bool) -> str:
+def _build_phase2_prompt(my: Offer, other: Offer, task: str, use_offer: bool, hq_context: str = "") -> str:
     if use_offer:
         passable = [p for p in my.can_provide if _is_passable(p)]
         ctx = f"""YOUR OFFER:
@@ -358,8 +358,10 @@ OTHER AGENT ({other.room_type}, {other.agent_id}):
     else:
         ctx = f"YOUR ROOM: {my.room_type}\nOTHER ROOM: {other.room_type}"
 
+    hq_block = f"\nHUMAN CLARIFICATION (use this to improve your plan):\n{hq_context}\n" if hq_context else ""
+
     return f"""You are the {my.room_type} agent ({my.agent_id}).
-Global task: "{task}"
+Global task: "{task}"{hq_block}
 
 {ctx}
 
@@ -716,7 +718,7 @@ def _ensure_pass(
     return plan_a, plan_b
 
 
-def _build_phase2b_prompt(my: Offer, other: Offer, draft: LocalPlan, task: str) -> str:
+def _build_phase2b_prompt(my: Offer, other: Offer, draft: LocalPlan, task: str, hq_context: str = "") -> str:
     """Phase 2b: 상대방 draft를 보고 최종 plan 생성."""
     other_summary = []
     for i, s in enumerate(draft.steps, 1):
@@ -729,8 +731,10 @@ def _build_phase2b_prompt(my: Offer, other: Offer, draft: LocalPlan, task: str) 
 
     passable = [p for p in my.can_provide if _is_passable(p)]
 
+    hq_block2 = f"\nHUMAN CLARIFICATION (incorporate into your plan):\n{hq_context}\n" if hq_context else ""
+
     return f"""You are {my.agent_id} ({my.room_type}).
-Global task: "{task}"
+Global task: "{task}"{hq_block2}
 
 YOUR can_provide: {json.dumps(passable, ensure_ascii=False)}
 YOUR need_from_other: {json.dumps(my.need_from_other, ensure_ascii=False)}
@@ -1254,55 +1258,45 @@ def phase5_convergence_check(
 
     no_cycle = not _has_cycle(all_steps)
 
-    # observability
+    # observability — 완화: 동사/일반어 제외, 핵심 명사만 체크
+    _OBS_SKIP = {"the","a","an","and","or","to","for","of","in","on","at",
+                 "place","set","put","move","carry","bring","arrange","adjust",
+                 "prepare","organize","clear","clean","check","make","create",
+                 "receive","notify","pick","get","take","use"}
     def _obs_pool(offer: Offer) -> Set[str]:
         pool = set(re.findall(r"\w+", offer.obs_scope.lower()))
         for cd in offer.can_do:
             pool |= _kw(cd)
-        return pool
+        return pool - _OBS_SKIP
 
     pool_a = _obs_pool(offer_a)
     pool_b = _obs_pool(offer_b)
     obs_ok = True
+    obs_violations = []
     for s in all_steps:
-        if s.get("handoff_type") == "PASS":
+        if s.get("handoff_type") in ("PASS", "INFORM"):
             continue
         pool = pool_a if s.get("agent_id") == "agent_A" else pool_b
-        kw   = _kw(s.get("action", ""))
-        if kw and pool and not (kw & pool):
+        kw   = _kw(s.get("action", "")) - _OBS_SKIP
+        if len(kw) >= 2 and pool and not (kw & pool):
             obs_ok = False
-            break
+            obs_violations.append(s["step_id"])
 
-    # missing deps: PASS step이 있는데 receiver deps 없음
+    # PASS-receive 매칭
     pass_ids_a = {s["step_id"] for s in steps_a if s.get("handoff_type") == "PASS"}
     pass_ids_b = {s["step_id"] for s in steps_b if s.get("handoff_type") == "PASS"}
     deps_in_b  = {d for s in steps_b for d in s.get("depends_on", []) if d in pass_ids_a}
     deps_in_a  = {d for s in steps_a for d in s.get("depends_on", []) if d in pass_ids_b}
-
-    unmatched = (pass_ids_a - deps_in_b) | (pass_ids_b - deps_in_a)
-    # 완화: target 플랜에 PASS 이후 시간의 스텝이 있으면 OK
-    truly_unmatched: Set[int] = set()
-    for sid in unmatched:
-        ps = next((s for s in all_steps if s["step_id"] == sid), None)
-        if not ps:
-            continue
-        target = ps.get("target_agent")
-        target_steps = [s for s in all_steps if s.get("agent_id") == target]
-        if not any(s["time_min"] > ps["time_min"] for s in target_steps):
-            truly_unmatched.add(sid)
-
+    truly_unmatched = (pass_ids_a - deps_in_b) | (pass_ids_b - deps_in_a)
     no_missing = len(truly_unmatched) == 0
 
     unresolved = [c for c in conflicts
                   if c.conflict_type in (ConflictType.REDUNDANCY, ConflictType.CANNOT_DO)]
     converged  = no_cycle and obs_ok and no_missing
 
-    print(f"  No dep cycle   : {'OK' if no_cycle else 'FAIL'}")
-    print(f"  Observability  : {'OK' if obs_ok else 'FAIL'}")
+    print(f"  Dep cycle      : {'OK' if no_cycle else 'FAIL'}")
     print(f"  PASS matched   : {'OK' if no_missing else f'FAIL (unmatched={truly_unmatched})'}")
-    print(f"  → Converged    : {'YES ✓' if converged else 'NO ✗'}")
-    if unresolved:
-        print(f"  Residual ({len(unresolved)}): {[c.conflict_type for c in unresolved]}")
+    print(f"  Observability  : {'OK' if obs_ok else f'WARN (step_ids={obs_violations})'}")
 
     return ConvergenceResult(
         converged            = converged,
@@ -1368,6 +1362,12 @@ Describe what the action IS (not step numbers). One sentence only."""
     try:
         q, _ = run_vlm(img, prompt)
         q = q.strip().strip('"').strip("'")
+        # 마크다운/불필요한 블록 제거
+        import re as _re
+        q = _re.sub(r'\*\*.*?\*\*:?\s*', '', q)       # **...**
+        q = _re.sub(r'Action:.*', '', q, flags=_re.S)  # Action: 이후 전부
+        q = _re.sub(r'Evaluate.*', '', q, flags=_re.S) # Evaluate 이후 전부
+        q = q.strip()
         if 10 < len(q) < 400:
             return q
     except Exception as e:
@@ -1378,8 +1378,8 @@ Describe what the action IS (not step numbers). One sentence only."""
 def phase6_human_query(
     plan_a: LocalPlan, plan_b: LocalPlan,
     offer_a: Offer, offer_b: Offer,
-    convergence: ConvergenceResult,
     img_a: str, img_b: str,
+    task: str = "",
     use_human_query: bool = True,
 ) -> Tuple[Dict[str, str], List[str], List[str]]:
     """
@@ -1471,65 +1471,42 @@ def phase6_human_query(
         if ans:
             answers[q] = ans
 
-    # ── 답변을 에이전트에게 전달 → mini re-planning ─────────────────────────
+    # ── 답변을 context로 에이전트에 전달 → Phase 2a부터 전체 re-planning ──────
     if answers:
-        _banner("PHASE 6b — MINI RE-PLANNING (with human context)")
-        hq_context = "\n".join(f"Q: {q}\nA: {a}" for q, a in answers.items())
+        _banner("PHASE 6b — FULL RE-PLANNING (with human context)")
+        hq_context = "\n".join(
+            f"Human clarification Q{i+1}: {q}\nAnswer: {a}"
+            for i, (q, a) in enumerate(answers.items())
+        )
+        print(f"  Human context:\n    {hq_context[:200]}")
 
-        def _mini_replan(plan: LocalPlan, offer: Offer, img: str) -> LocalPlan:
-            current_steps = "\n".join(
-                f"  Step {i+1}: {s.action}"
-                + (f" [PASS→{s.target_agent}]" if s.handoff_type=="PASS" else "")
-                for i, s in enumerate(plan.steps)
-            )
-            prompt = f"""You are {offer.agent_id} ({offer.room_type}).
-Global task context and human clarification:
-{hq_context}
+        # Phase 2a: HQ context 포함해서 draft 재생성
+        _banner("PHASE 6b-2a — RE-DRAFT PLANNING")
+        p2a_a = _build_phase2_prompt(offer_a, offer_b, task, True, hq_context=hq_context)
+        p2a_b = _build_phase2_prompt(offer_b, offer_a, task, True, hq_context=hq_context)
+        res_2a = _run_parallel([(img_a, p2a_a, True), (img_b, p2a_b, True)])
+        redraft_a = _parse_local_plan(res_2a[0][0], res_2a[0][1], offer_a, step_offset=0)
+        redraft_b = _parse_local_plan(res_2a[1][0], res_2a[1][1], offer_b, step_offset=AGENT_B_STEP_OFFSET)
+        print(f"  A re-draft: {len(redraft_a.steps)} steps | B re-draft: {len(redraft_b.steps)} steps")
 
-YOUR CURRENT PLAN:
-{current_steps}
+        # Phase 2b: 상대방 re-draft 보고 최종 re-plan
+        _banner("PHASE 6b-2b — RE-FINAL PLANNING")
+        p2b_a = _build_phase2b_prompt(offer_a, offer_b, redraft_b, task, hq_context=hq_context)
+        p2b_b = _build_phase2b_prompt(offer_b, offer_a, redraft_a, task, hq_context=hq_context)
+        res_2b = _run_parallel([(img_a, p2b_a, True), (img_b, p2b_b, True)])
+        new_a = _parse_local_plan(res_2b[0][0], res_2b[0][1], offer_a, step_offset=0)
+        new_b = _parse_local_plan(res_2b[1][0], res_2b[1][1], offer_b, step_offset=AGENT_B_STEP_OFFSET)
 
-Based on the human's answers above, update your plan if needed.
-- Only modify steps that are directly affected by the human's answers.
-- Do NOT change steps that are already correct.
-- If no changes needed, return the same plan.
-- Steps ONLY in {offer.room_type}, using ONLY visible objects.
-- Return ONLY valid JSON inside <JSON> tags.
+        # Phase 2c: rule-based PASS 보완
+        _banner("PHASE 6b-2c — RE-HANDOFF COORDINATION")
+        new_a, new_b = _ensure_pass(new_a, new_b, offer_a, offer_b)
 
-<JSON>
-{{"plan_steps": [
-  {{"step_id":1,"time_min":1,"action":"...",
-    "preconditions":[],"depends_on":[],"handoff_type":null,
-    "target_agent":null,"uncertainty":0.1,"notes":""}}
-]}}
-</JSON>"""
-            try:
-                raw, logp = run_vlm(img, prompt)
-                new_plan = _parse_local_plan(raw, logp, offer,
-                                             step_offset=plan.steps[0].step_id - 1
-                                             if plan.steps else 0)
-                if new_plan.steps:
-                    print(f"  [{offer.agent_id}] re-planned: {len(new_plan.steps)} steps")
-                    return new_plan
-            except Exception as e:
-                print(f"  [{offer.agent_id}] re-plan failed: {e}")
-            return plan  # 실패 시 원본 유지
-
-        results = _run_parallel([
-            (img_a, "", False),  # dummy — 실제로는 직접 호출
-            (img_b, "", False),
-        ])
-        # 병렬로 mini re-planning
-        with __import__('concurrent.futures', fromlist=['ThreadPoolExecutor']).ThreadPoolExecutor(2) as ex:
-            fut_a = ex.submit(_mini_replan, plan_a, offer_a, img_a)
-            fut_b = ex.submit(_mini_replan, plan_b, offer_b, img_b)
-            new_a = fut_a.result()
-            new_b = fut_b.result()
-
-        # plan_a, plan_b를 in-place 업데이트
+        # in-place 업데이트
         plan_a.steps[:] = new_a.steps
+        plan_a.handoffs[:] = new_a.handoffs
         plan_b.steps[:] = new_b.steps
-        print("  Mini re-planning complete.")
+        plan_b.handoffs[:] = new_b.handoffs
+        print(f"  Re-planning complete: A={len(plan_a.steps)} steps, B={len(plan_b.steps)} steps")
 
     return answers, triggered, asked
 
@@ -1542,7 +1519,6 @@ def phase_finalize(
     steps_a: List[Dict], steps_b: List[Dict],
     offer_a: Offer, offer_b: Offer,
     human_answers: Dict[str, str],
-    convergence: ConvergenceResult,
     verbose: str = "full",
 ) -> List[Dict]:
     _banner("FINALIZE — RULE-BASED MERGE")
@@ -1645,38 +1621,66 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
         deps   = s.get("depends_on",[])
 
         suffix = ""
-        if ht == "PASS":   suffix = f"  ──► [{tgt}에게 전달]"
-        elif ht == "INFORM": suffix = f"  ~~► [{tgt}에게 알림]"
+        badge  = "  "
+        if ht == "PASS":
+            suffix = f"  ──────► {tgt}"
+            badge  = "[전달↑]"
+        elif ht == "INFORM":
+            suffix = f"  ~~~~~~~► {tgt}"
+            badge  = "[알림↑]"
 
-        lines.append(f"  {idx:>2}. [{room}] [{agent}]")
+        # receive step 감지 — cross-agent PASS에 depend
+        cross_pass = [id_to_step[d] for d in deps
+                      if d in id_to_step
+                      and id_to_step[d].get("agent_id") != agent
+                      and id_to_step[d].get("handoff_type") == "PASS"]
+        if cross_pass:
+            badge = "[수신↓]"
+
+        lines.append(f"  {idx:>2}. [{room}] [{agent}] {badge}")
         lines.append(f"      {action}{suffix}")
 
-        cross = [id_to_step[d] for d in deps
-                 if d in id_to_step and id_to_step[d].get("agent_id") != agent]
-        for dep in cross:
+        cross_all = [id_to_step[d] for d in deps
+                     if d in id_to_step and id_to_step[d].get("agent_id") != agent]
+        for dep in cross_all:
             da = dep["action"]
-            ds = (da[:40]+"…") if len(da)>40 else da
-            lines.append(f"      ({dep.get('agent_id','?')}의 \"{ds}\" 완료 후 실행)")
+            ds = (da[:45]+"…") if len(da)>45 else da
+            lines.append("      ⏳ " + dep.get('agent_id','?') + "의 '" + ds + "' 완료 후 실행")
         lines.append("")
 
     coord: List[str] = []
     for s in sorted_plan:
         ht = s.get("handoff_type")
         if not ht: continue
-        src = s.get("agent_id","?"); tgt = s.get("target_agent","?")
+        src = s.get("agent_id","?")
+        tgt = s.get("target_agent","?")
         act = s.get("action","")
-        short = (act[:48]+"…") if len(act)>48 else act
-        recv = [r for r in plan if s["step_id"] in r.get("depends_on",[]) and r.get("agent_id")!=src]
+        short = (act[:50]+"…") if len(act)>50 else act
+        recv = [r for r in plan
+                if s["step_id"] in r.get("depends_on",[])
+                and r.get("agent_id") != src]
         if ht == "PASS":
             ra = recv[0]["action"] if recv else "수신 스텝 없음"
-            rs = (ra[:40]+"…") if len(ra)>40 else ra
-            coord += [f"  {src}  ──[전달]──►  {tgt}", f"    전달: \"{short}\"", f"    수신: \"{rs}\"", ""]
+            rs = (ra[:45]+"…") if len(ra)>45 else ra
+            coord += [
+                f"  [전달↑] {src} ──────► {tgt}",
+                "     전달: " + short,
+                f"  [수신↓] {tgt} ◄──────",
+                "     수신: " + rs,
+                "",
+            ]
         elif ht == "INFORM":
-            coord += [f"  {src}  ~~[알림]~~►  {tgt}  |  \"{short}\"", ""]
+            coord += [
+                f"  [알림↑] {src} ~~~~~~~► {tgt}",
+                "     알림: " + short,
+                "",
+            ]
 
     if coord:
         lines.append("─"*68)
-        lines.append("  COORDINATION SUMMARY"); lines.append("")
+        lines.append("  COORDINATION SUMMARY")
+        lines.append("")
         lines.extend(coord)
+
     lines.append(SEP)
     return "\n".join(lines)
