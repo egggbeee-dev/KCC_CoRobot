@@ -1,20 +1,18 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# p2p_judge_simple.py
-# LLM-as-a-Judge: 7개 지표를 단일 GPT-4o 호출로 평가
+# p2p_judge.py
+# 7개 지표 통합 Judge
 #
-# 평가 지표 (p2p_config.EVAL_WEIGHTS 기준):
-#   TS  Task Success            0.25  ← ground_truth 비교
-#   PE  Plan Executability      0.20
-#   OC  Observability Consist.  0.20  ← 이미지 직접 참조
-#   SC  Sequential Coherence    0.15
-#   CQ  Collaboration Quality   0.10
-#   HQE Human Query Efficiency  0.05
-#   DC  Dialogue Cost           0.05  ← 라운드 수로 자동 고정
-#
-# 호환: p2p_main.py (metrics 키 구조, rule-based finalize)
+# 지표별 방식:
+#   TS  (0.25) : Embedding + Hungarian 1:1 매칭 → F-score (β=1.5)
+#   PE  (0.20) : Embedding 후보 필터 → LLM 위반 확인 → can_do 범위 체크
+#   OC  (0.20) : step별 Vision LLM (detail: high)
+#   SC  (0.15) : Rule-based (참조오류/사이클/시간충돌) + LLM 역순 탐지
+#   CQ  (0.10) : Rule-based (invalid handoff/no change) + LLM 협상 품질
+#   HQE (0.05) : query 없으면 VLM으로 판단 / query 있으면 개별 NECESSARY 판단
+#   DC  (0.05) : Rule-based. 라운드/메시지 수 정규화
 #
 # 사용법:
-#   from p2p_judge_simple import judge, print_report, save_report
+#   from p2p_judge import judge, print_report, save_report
 #   result = run(task_id="task_001", img_a="...", img_b="...")
 #   report = judge(result, img_a="...", img_b="...")
 # ══════════════════════════════════════════════════════════════════════════════
@@ -23,14 +21,50 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-import math
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from p2p_config import EVAL_WEIGHTS, EVAL_METRIC_NAMES
+# ── 가중치 / 지표 이름 ────────────────────────────────────────────────────────
+EVAL_WEIGHTS = {
+    "TS" : 0.25,
+    "PE" : 0.20,
+    "OC" : 0.20,
+    "SC" : 0.15,
+    "CQ" : 0.10,
+    "HQE": 0.05,
+    "DC" : 0.05,
+}
+EVAL_METRIC_NAMES = {
+    "TS" : "Task Success",
+    "PE" : "Plan Executability",
+    "OC" : "Observability Consistency",
+    "SC" : "Sequential Coherence",
+    "CQ" : "Collaboration Quality",
+    "HQE": "Human Query Efficiency",
+    "DC" : "Dialogue Cost",
+}
+
+# ── DC 설정 ───────────────────────────────────────────────────────────────────
+DC_MAX_ROUNDS   = 4
+DC_MAX_MESSAGES = 20
+DC_ALPHA        = 0.6
+DC_BETA         = 0.4
+
+# ── TS 설정 ───────────────────────────────────────────────────────────────────
+TS_FULL_THRESH    = 0.75
+TS_PARTIAL_THRESH = 0.55
+TS_BETA           = 1.5
+
+# ── PE 설정 ───────────────────────────────────────────────────────────────────
+PE_CANDIDATE_THRESH = 0.35
+PE_SCOPE_THRESH     = 0.50
+
+# ── SC 설정 ───────────────────────────────────────────────────────────────────
+# (rule-based + LLM, 설정값 없음)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -39,30 +73,106 @@ from p2p_config import EVAL_WEIGHTS, EVAL_METRIC_NAMES
 
 @dataclass
 class MetricScore:
-    key:      str
-    name:     str
-    score:    float
-    evidence: str
-    weight:   float
+    key      : str
+    name     : str
+    score    : float
+    evidence : str
+    weight   : float
+    detail   : Optional[Dict] = None
 
 
 @dataclass
 class JudgeReport:
-    task_id:        str
-    task:           str
-    metrics:        List[MetricScore]
-    final_weighted: float
-    verdict:        str
-    top_issue:      str
-    raw_response:   str
-    ts_coverage:    Optional[Dict] = None   # embedding 기반 TS 커버리지 상세
+    task_id        : str
+    task           : str
+    metrics        : List[MetricScore]
+    final_weighted : float
+    verdict        : str
+    top_issue      : str
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# tasks.json 로더 (ground_truth 조회)
+# 공통 유틸
 # ══════════════════════════════════════════════════════════════════════════════
 
+_client = None
+_emb_cache: Dict[str, List[float]] = {}
 _tasks_cache: Optional[List[Dict]] = None
+
+
+def _get_client():
+    global _client
+    if _client is not None:
+        return _client
+    from openai import OpenAI
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY 환경변수를 설정하세요.")
+    _client = OpenAI(api_key=api_key)
+    return _client
+
+
+def _get_embeddings(texts: List[str]) -> List[List[float]]:
+    client   = _get_client()
+    to_fetch = [t for t in texts if t not in _emb_cache]
+    if to_fetch:
+        resp = client.embeddings.create(model="text-embedding-3-large", input=to_fetch)
+        for text, obj in zip(to_fetch, resp.data):
+            _emb_cache[text] = obj.embedding
+    return [_emb_cache[t] for t in texts]
+
+
+def _cosine(a: List[float], b: List[float]) -> float:
+    dot    = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+
+def _encode_image(path: str) -> Tuple[str, str]:
+    ext  = path.rsplit(".", 1)[-1].lower()
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "png": "image/png",  "webp": "image/webp"}.get(ext, "image/jpeg")
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode(), mime
+
+
+def _image_block(img_path: str, label: str) -> List[Dict]:
+    b64, mime = _encode_image(img_path)
+    return [
+        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"}},
+        {"type": "text", "text": f"[{label}]"},
+    ]
+
+
+def _llm(system: str, user_content: Any, max_tokens: int = 400) -> str:
+    client = _get_client()
+    resp   = client.chat.completions.create(
+        model      = "gpt-4o",
+        max_tokens = max_tokens,
+        messages   = [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user_content},
+        ],
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _parse_json(raw: str) -> Dict:
+    for pat, flags in [
+        (r"```json\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE),
+        (r"```\s*(.*?)\s*```",     re.DOTALL),
+    ]:
+        m = re.search(pat, raw, flags)
+        if m:
+            try: return json.loads(m.group(1))
+            except: pass
+    start = raw.find("{") if "{" in raw else raw.find("[")
+    if start == -1:
+        return {}
+    try: return json.loads(raw[start:])
+    except: return {}
+
 
 def _load_ground_truth(task_id: str) -> Dict:
     global _tasks_cache
@@ -80,407 +190,500 @@ def _load_ground_truth(task_id: str) -> Dict:
     return {}
 
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# Embedding 기반 TS 계산
-# OpenAI text-embedding-3-small 사용
+# TS — Task Success
 # ══════════════════════════════════════════════════════════════════════════════
 
-_emb_cache: Dict[str, List[float]] = {}   # 텍스트 → embedding 캐시
-
-
-def _get_embeddings(texts: List[str]) -> List[List[float]]:
-    """텍스트 리스트를 embedding으로 변환. 캐시 적용."""
-    client = _get_client()
-    to_fetch = [t for t in texts if t not in _emb_cache]
-    if to_fetch:
-        resp = client.embeddings.create(
-            model = "text-embedding-3-small",
-            input = to_fetch,
-        )
-        for text, emb_obj in zip(to_fetch, resp.data):
-            _emb_cache[text] = emb_obj.embedding
-    return [_emb_cache[t] for t in texts]
-
-
-def _cosine_similarity(a: List[float], b: List[float]) -> float:
-    dot   = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-def compute_ts_coverage(
-    ground_truth: Dict,
-    joint_plan:   List[Dict],
-    full_thresh:  float = 0.80,
-    partial_thresh: float = 0.60,
-    verbose: bool = False,
-) -> Dict:
-    """
-    Embedding cosine similarity로 GT 대비 joint_plan 커버리지를 계산한다.
-
-    반환값:
-        {
-          "ts_score"         : float (0–10),
-          "coverage_rate"    : float (0–1),
-          "full_match"       : int,
-          "partial_match"    : int,
-          "no_match"         : int,
-          "total_gt"         : int,
-          "matched_pairs"    : [(gt_item, plan_action, similarity), ...],
-          "unmatched_gt"     : [str, ...],
-        }
-    """
-    # GT 항목 전체 펼치기
-    gt_items: List[str] = []
-    for steps in ground_truth.values():
-        gt_items.extend(steps)
-
-    if not gt_items or not joint_plan:
-        return {
-            "ts_score": 0.0, "coverage_rate": 0.0,
-            "full_match": 0, "partial_match": 0, "no_match": len(gt_items),
-            "total_gt": len(gt_items), "matched_pairs": [], "unmatched_gt": gt_items,
-        }
-
+def _compute_ts(ground_truth: Dict, joint_plan: List[Dict]) -> Tuple[float, str, Dict]:
+    gt_items     = [s for steps in ground_truth.values() for s in steps]
     plan_actions = [s["action"] for s in joint_plan]
 
-    # embedding 계산
+    if not gt_items or not plan_actions:
+        return 0.0, "No GT or plan", {}
+
+    try:
+        import numpy as np
+        from scipy.optimize import linear_sum_assignment
+        _scipy = True
+    except ImportError:
+        _scipy = False
+
     gt_embs   = _get_embeddings(gt_items)
     plan_embs = _get_embeddings(plan_actions)
 
-    matched_pairs = []
-    unmatched_gt  = []
-    full_count    = 0
-    partial_count = 0
-    no_count      = 0
-
-    for gt_text, gt_emb in zip(gt_items, gt_embs):
-        sims = [_cosine_similarity(gt_emb, pe) for pe in plan_embs]
-        best_idx  = max(range(len(sims)), key=lambda i: sims[i])
-        best_sim  = sims[best_idx]
-        best_action = plan_actions[best_idx]
-
-        if best_sim >= full_thresh:
-            full_count += 1
-            matched_pairs.append((gt_text, best_action, round(best_sim, 3)))
-        elif best_sim >= partial_thresh:
-            partial_count += 1
-            matched_pairs.append((gt_text, best_action, round(best_sim, 3)))
+    # 헝가리안 1:1 매칭
+    if _scipy:
+        import numpy as np
+        sim_matrix = np.array([[_cosine(g, p) for p in plan_embs] for g in gt_embs])
+        if len(gt_items) <= len(plan_actions):
+            row_ind, col_ind = linear_sum_assignment(-sim_matrix)
+            pairs = [(r, c, float(sim_matrix[r, c])) for r, c in zip(row_ind, col_ind)]
         else:
-            no_count += 1
-            unmatched_gt.append(gt_text)
-
-        if verbose:
-            tag = "FULL" if best_sim >= full_thresh else ("PART" if best_sim >= partial_thresh else "MISS")
-            print(f"  [{tag} {best_sim:.2f}] GT: {gt_text[:50]}")
-            if best_sim >= partial_thresh:
-                print(f"           Plan: {best_action[:50]}")
-
-    total   = len(gt_items)
-    # 가중 커버리지: full=1.0, partial=0.5
-    coverage = (full_count * 1.0 + partial_count * 0.5) / total if total > 0 else 0.0
-    ts_score = round(coverage * 10.0, 2)
-
-    return {
-        "ts_score"      : ts_score,
-        "coverage_rate" : round(coverage, 3),
-        "full_match"    : full_count,
-        "partial_match" : partial_count,
-        "no_match"      : no_count,
-        "total_gt"      : total,
-        "matched_pairs" : matched_pairs,
-        "unmatched_gt"  : unmatched_gt,
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# OpenAI 클라이언트
-# ══════════════════════════════════════════════════════════════════════════════
-
-_client = None
-
-def _get_client():
-    global _client
-    if _client is not None:
-        return _client
-    try:
-        from openai import OpenAI
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "OPENAI_API_KEY 환경변수가 설정되지 않았습니다.\n"
-                "  os.environ['OPENAI_API_KEY'] = 'sk-...' 로 설정하세요."
-            )
-        _client = OpenAI(api_key=api_key)
-        return _client
-    except ImportError:
-        raise ImportError("openai 패키지가 필요합니다: pip install openai")
-
-
-def _encode_image(path: str) -> Tuple[str, str]:
-    ext  = path.rsplit(".", 1)[-1].lower()
-    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
-            "png": "image/png",  "webp": "image/webp"}.get(ext, "image/jpeg")
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode(), mime
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 프롬프트 생성
-# ══════════════════════════════════════════════════════════════════════════════
-
-_SYSTEM = """\
-You are an expert evaluator for multi-agent collaborative planning.
-You will be given two room images, a task description with ground truth,
-and a planning session result.
-Evaluate the final joint plan across 7 metrics.
-Respond ONLY with valid JSON — no prose before or after.\
-"""
-
-
-def _build_prompt(result: Dict, ground_truth: Dict, ts_cov: Optional[Dict] = None) -> str:
-    task        = result["task"]
-    offers      = result["offers"]
-    joint_plan  = result["joint_plan"]
-    convergence = result["convergence"]
-    n_rounds    = result["negotiation"]["rounds"]
-    hq_asked       = result.get("hq_asked", [])
-    human_answers  = result.get("human_answers", {})
-
-    # ground_truth 포맷
-    gt_lines = []
-    for room, steps in ground_truth.items():
-        gt_lines.append(f"  [{room}]")
-        for s in steps:
-            gt_lines.append(f"    - {s}")
-    gt_str = "\n".join(gt_lines) if gt_lines else "  (not available)"
-
-    # 협상 히스토리 요약 (proposal 구조 버전 무관하게 처리)
-    def _summarize_proposal(p: Dict) -> str:
-        # 구버전: proposed_change 필드
-        if "proposed_change" in p:
-            return p["proposed_change"]
-        # 신버전: field + new_value 구조
-        if "field" in p and "new_value" in p:
-            return f"step{p.get('step_id','?')}.{p['field']}={p['new_value']}"
-        return str(p)
-
-    neg_lines = []
-    for r in result["negotiation"]["history"]:
-        pa = [_summarize_proposal(p) for p in r["proposals_a"]]
-        pb = [_summarize_proposal(p) for p in r["proposals_b"]]
-        neg_lines.append(
-            f"  Round {r['round_num']}: "
-            f"A proposed {pa} | B proposed {pb} | locked={r['locked_step_ids']}"
-        )
-    neg_str = "\n".join(neg_lines) if neg_lines else "  (no negotiation)"
-
-    # human query Q&A 포맷
-    hq_lines = []
-    for i, q in enumerate(hq_asked, 1):
-        ans = human_answers.get(q, "(no answer)")
-        hq_lines.append(f"  Q{i}: {q}")
-        hq_lines.append(f"  A{i}: {ans}")
-    hq_str = "\n".join(hq_lines) if hq_lines else "  (none)"
-
-    # joint plan 요약
-    plan_lines = []
-    for s in joint_plan:
-        hoff = f" [{s['handoff_type']}→{s['target_agent']}]" if s.get("handoff_type") else ""
-        dep  = f" deps={s['depends_on']}" if s.get("depends_on") else ""
-        plan_lines.append(
-            f"  Step {s['step_id']} [T={s['time_min']}m] "
-            f"[{s['agent_id']}] {s['action']}{hoff}{dep}"
-        )
-    plan_str = "\n".join(plan_lines)
-
-    dc_score = round(max(2.5, 10.0 - n_rounds * 2.5), 1)
-
-    # TS coverage 섹션 생성
-    if ts_cov:
-        ts_lines = [
-            f"  Score (embedding): {ts_cov['ts_score']:.1f}/10  "
-            f"(coverage={ts_cov['coverage_rate']:.2f})",
-            f"  Full match : {ts_cov['full_match']} / {ts_cov['total_gt']}  "
-            f"(cosine ≥ 0.80)",
-            f"  Partial match: {ts_cov['partial_match']} / {ts_cov['total_gt']}  "
-            f"(cosine 0.60–0.79)",
-            f"  No match   : {ts_cov['no_match']} / {ts_cov['total_gt']}  "
-            f"(cosine < 0.60)",
-        ]
-        if ts_cov["matched_pairs"]:
-            ts_lines.append("  Top matched pairs:")
-            for gt_t, plan_t, sim in ts_cov["matched_pairs"][:5]:
-                ts_lines.append(f"    [{sim:.2f}] GT: {gt_t[:45]}")
-                ts_lines.append(f"           Plan: {plan_t[:45]}")
-        if ts_cov["unmatched_gt"]:
-            ts_lines.append("  Unmatched GT items (plan lacks these):")
-            for u in ts_cov["unmatched_gt"][:5]:
-                ts_lines.append(f"    - {u}")
-        ts_coverage_str = "\n".join(ts_lines)
+            col_ind, row_ind = linear_sum_assignment(-sim_matrix.T)
+            matched = set(row_ind)
+            pairs   = [(r, c, float(sim_matrix[r, c])) for r, c in zip(row_ind, col_ind)]
+            for i in range(len(gt_items)):
+                if i not in matched:
+                    pairs.append((i, -1, 0.0))
     else:
-        ts_coverage_str = "  (ground truth not available)"
+        pairs, used = [], set()
+        for gi, ge in enumerate(gt_embs):
+            best_sim, best_pi = -1.0, -1
+            for pi, pe in enumerate(plan_embs):
+                if pi in used: continue
+                s = _cosine(ge, pe)
+                if s > best_sim: best_sim, best_pi = s, pi
+            if best_pi != -1: used.add(best_pi)
+            pairs.append((gi, best_pi, best_sim))
 
-    return f"""\
-[IMAGE A is Agent A's room — {offers['agent_A']['room_type']}]
-[IMAGE B is Agent B's room — {offers['agent_B']['room_type']}]
+    full_count = partial_count = 0
+    weighted_sum = 0.0
+    matched_plan_set: Set[int] = set()
+    span = TS_FULL_THRESH - TS_PARTIAL_THRESH
 
-## Task
-{task}
+    for gt_i, plan_i, sim in pairs:
+        if sim >= TS_FULL_THRESH:
+            full_count += 1
+            weighted_sum += 1.0
+            if plan_i >= 0: matched_plan_set.add(plan_i)
+        elif sim >= TS_PARTIAL_THRESH:
+            partial_count += 1
+            w = 0.3 + 0.4 * (sim - TS_PARTIAL_THRESH) / span
+            weighted_sum += w
+            if plan_i >= 0: matched_plan_set.add(plan_i)
 
-## Ground Truth (expected actions per room)
-{gt_str}
+    total_gt   = len(gt_items)
+    total_plan = len(plan_actions)
+    recall     = weighted_sum / total_gt if total_gt > 0 else 0.0
+    precision  = len(matched_plan_set) / total_plan if total_plan > 0 else 0.0
 
-## TS Coverage (pre-computed via embedding similarity)
-{ts_coverage_str}
+    b2 = TS_BETA ** 2
+    denom = b2 * precision + recall
+    fs = (1 + b2) * precision * recall / denom if denom > 0 else 0.0
+    score = round(fs * 10.0, 2)
 
-## Agent A Offer
-can_do   : {json.dumps(offers['agent_A']['can_do'], ensure_ascii=False)}
-cannot_do: {json.dumps([c['action'] for c in offers['agent_A']['cannot_do']], ensure_ascii=False)}
-obs_scope: {offers['agent_A']['obs_scope']}
-
-## Agent B Offer
-can_do   : {json.dumps(offers['agent_B']['can_do'], ensure_ascii=False)}
-cannot_do: {json.dumps([c['action'] for c in offers['agent_B']['cannot_do']], ensure_ascii=False)}
-obs_scope: {offers['agent_B']['obs_scope']}
-
-## Negotiation ({n_rounds} rounds)
-{neg_str}
-converged={convergence['converged']} | pass_matched={convergence['pass_matched']} | unresolved={convergence['unresolved']}
-human_queries ({len(hq_asked)} asked):
-{hq_str}
-
-## Final Joint Plan
-{plan_str}
-
-## Evaluation Instructions
-Score each metric 0.0–10.0 and provide one sentence of evidence.
-
-TS  (Task Success)           : An embedding-based coverage score has been pre-computed.
-                               Use the TS Coverage section above as the primary basis.
-                               Adjust by ±1.0 only if the embedding score seems clearly wrong
-                               (e.g. high similarity but semantically unrelated actions).
-                               Do NOT ignore the pre-computed score — anchor your judgment to it.
-
-PE  (Plan Executability)     : Are all steps within each agent's can_do? No cannot_do violations?
-                               10=all executable, 7=1-2 borderline, 4=multiple violations, 1=mostly impossible.
-
-OC  (Observability Consist.) : Look at the images. Are all objects/locations in the plan
-                               actually visible in the correct agent's image?
-                               10=all grounded, 7=1-2 ambiguous, 4=several ungrounded, 1=severe hallucination.
-
-SC  (Sequential Coherence)   : Are depends_on references valid? No temporal conflicts or cycles?
-                               10=fully coherent, 7=minor issues, 4=multiple dep errors, 1=structural breakdown.
-
-CQ  (Collaboration Quality)  : Did negotiation improve the plan? Are PASS/INFORM handoffs logical?
-                               10=clear improvement, 7=some improvement, 4=unclear effect, 1=worsened plan.
-
-HQE (Human Query Efficiency) : Strictly judge whether each human query was truly NECESSARY.
-                               UNNECESSARY = agent could resolve it autonomously, or asked human
-                               to make a decision the agent should make, or answer did not improve
-                               the plan, or re-confirms something already in the plan.
-                               NECESSARY = asks for info that cannot be inferred from images/offers
-                               and is genuinely blocking plan execution.
-                               If no queries: score 5.0 exactly.
-                               10=all necessary and improved plan, 7=mostly necessary,
-                               5=none asked, 3=most unnecessary, 1=all unnecessary/harmful.
-
-DC  (Dialogue Cost)          : FIXED. Use exactly {dc_score:.1f} (formula: 10 - {n_rounds}*2.5).
-                               Evidence must state: "{n_rounds} negotiation round(s)."
-
-Respond with EXACTLY this JSON:
-{{
-  "TS":  {{"score": 0.0, "evidence": "one sentence"}},
-  "PE":  {{"score": 0.0, "evidence": "one sentence"}},
-  "OC":  {{"score": 0.0, "evidence": "one sentence"}},
-  "SC":  {{"score": 0.0, "evidence": "one sentence"}},
-  "CQ":  {{"score": 0.0, "evidence": "one sentence"}},
-  "HQE": {{"score": 0.0, "evidence": "one sentence"}},
-  "DC":  {{"score": {dc_score:.1f}, "evidence": "{n_rounds} negotiation round(s)."}}
-}}\
-"""
+    no_match = total_gt - full_count - partial_count
+    ev = (f"Hungarian matching: {full_count} full + {partial_count} partial / {total_gt} GT "
+          f"| recall={recall:.3f} precision={precision:.3f} F(β={TS_BETA})={fs:.3f}")
+    detail = {
+        "full_match": full_count, "partial_match": partial_count,
+        "no_match": no_match, "total_gt": total_gt,
+        "recall": round(recall, 4), "precision": round(precision, 4), "f_score": round(fs, 4),
+    }
+    return score, ev, detail
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LLM 호출
+# PE — Plan Executability
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _call_llm(prompt: str, img_a: str, img_b: str) -> str:
-    client  = _get_client()
-    content = []
+def _compute_pe(offers: Dict, joint_plan: List[Dict]) -> Tuple[float, str, Dict]:
+    agent_can_do:    Dict[str, List[str]] = {}
+    agent_cannot_do: Dict[str, List[str]] = {}
+    for ak, offer in offers.items():
+        agent_can_do[ak]    = list(offer.get("can_do", []))
+        agent_cannot_do[ak] = [c["action"] if isinstance(c, dict) else c
+                                for c in offer.get("cannot_do", [])]
 
-    b64, mime = _encode_image(img_a)
-    content.append({"type": "image_url",
-                     "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "low"}})
-    content.append({"type": "text", "text": "[IMAGE A — Agent A's room]"})
+    all_texts = set()
+    for ak in agent_can_do:
+        all_texts.update(agent_can_do[ak])
+        all_texts.update(agent_cannot_do[ak])
+    for s in joint_plan:
+        all_texts.add(s["action"])
+    if all_texts:
+        _get_embeddings(list(all_texts))
 
-    b64, mime = _encode_image(img_b)
-    content.append({"type": "image_url",
-                     "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "low"}})
-    content.append({"type": "text", "text": "[IMAGE B — Agent B's room]"})
+    violation_count = out_of_scope_count = llm_calls = 0
+    step_tags: Dict[int, str] = {}
 
-    content.append({"type": "text", "text": prompt})
+    for step in joint_plan:
+        action    = step["action"]
+        agent_key = step.get("agent_id", "")
+        cannot_list = agent_cannot_do.get(agent_key, [])
+        can_list    = agent_can_do.get(agent_key, [])
 
-    resp = client.chat.completions.create(
-        model      = "gpt-4o",
-        max_tokens = 1200,
-        messages   = [
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user",   "content": content},
-        ],
-    )
-    return resp.choices[0].message.content.strip()
+        # 1단계: cannot_do 후보 필터
+        violation = False
+        if cannot_list:
+            action_emb  = _get_embeddings([action])[0]
+            cannot_embs = _get_embeddings(cannot_list)
+            candidates  = [(cannot_list[i], _cosine(action_emb, cannot_embs[i]))
+                           for i in range(len(cannot_list))
+                           if _cosine(action_emb, cannot_embs[i]) >= PE_CANDIDATE_THRESH]
+            candidates.sort(key=lambda x: x[1], reverse=True)
 
+            if candidates:
+                llm_calls += 1
+                cannot_str = "\n".join(f"  - {item} (sim={sim:.3f})"
+                                        for item, sim in candidates)
+                prompt = (f'Agent: {agent_key}\nAction: "{action}"\n'
+                          f'Cannot-do rules:\n{cannot_str}\n'
+                          f'Does this action violate any cannot-do rule?\n'
+                          f'{{"violation": true/false, "matched_rule": "...", "reason": "..."}}')
+                raw    = _llm("You are a strict robot task evaluator. "
+                              "Respond ONLY with valid JSON.", prompt, max_tokens=150)
+                parsed = _parse_json(raw)
+                if parsed.get("violation"):
+                    violation = True
+                    violation_count += 1
 
-# ══════════════════════════════════════════════════════════════════════════════
-# JSON 파싱
-# ══════════════════════════════════════════════════════════════════════════════
+        # 2단계: can_do 범위 체크
+        out_of_scope = False
+        if not violation and can_list:
+            action_emb = _get_embeddings([action])[0]
+            can_embs   = _get_embeddings(can_list)
+            best_sim   = max(_cosine(action_emb, e) for e in can_embs)
+            if best_sim < PE_SCOPE_THRESH:
+                out_of_scope = True
+                out_of_scope_count += 1
 
-def _parse_response(text: str) -> Dict:
-    m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except Exception:
-            pass
-    start = text.find("{")
-    if start == -1:
-        return {}
-    depth, in_str, esc = 0, False, False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            esc = (not esc) if ch == "\\" else False
-            if not esc and ch == '"':
-                in_str = False
+        if violation:
+            step_tags[step["step_id"]] = "VIOLATION"
+        elif out_of_scope:
+            step_tags[step["step_id"]] = "OUT_OF_SCOPE"
         else:
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[start:i+1])
-                    except Exception:
-                        return {}
-    return {}
+            step_tags[step["step_id"]] = "OK"
 
-
-def _safe_score(v: Any) -> float:
-    try:
-        return max(0.0, min(10.0, float(v)))
-    except Exception:
-        return 5.0
+    total        = len(joint_plan)
+    problem_rate = (violation_count + out_of_scope_count) / total if total > 0 else 0.0
+    score        = round(10.0 * (1 - problem_rate) ** 2, 2)
+    ev = (f"Violations={violation_count} OutOfScope={out_of_scope_count} / {total} steps "
+          f"(LLM calls={llm_calls})")
+    detail = {"violation_count": violation_count, "out_of_scope_count": out_of_scope_count,
+              "total_steps": total, "problem_rate": round(problem_rate, 4),
+              "step_tags": step_tags}
+    return score, ev, detail
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 메인 함수
+# OC — Observability Consistency
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _compute_oc(joint_plan: List[Dict], img_map: Dict[str, str],
+                room_map: Dict[str, str]) -> Tuple[float, str, Dict]:
+    _SYS = ("You are a precise robot vision evaluator. "
+            "Respond ONLY with valid JSON. No prose before or after.")
+    grounded = ambiguous = hallucinated = 0
+    step_details = []
+
+    for step in joint_plan:
+        action    = step["action"]
+        agent_key = step.get("agent_id", "")
+        img_path  = img_map.get(agent_key, "")
+        room      = room_map.get(agent_key, agent_key)
+
+        if not img_path or not os.path.exists(img_path):
+            verdict, reason = "ambiguous", "Image not found"
+        else:
+            content = _image_block(img_path, f"{agent_key} — {room}")
+            content.append({"type": "text", "text":
+                f'Agent: {agent_key}\nRoom: {room}\nAction: "{action}"\n'
+                f'Are the objects/locations in this action visible in the image?\n'
+                f'{{"verdict": "yes"/"ambiguous"/"no", "reason": "one sentence"}}'})
+            raw    = _llm(_SYS, content, max_tokens=150)
+            parsed = _parse_json(raw)
+            verdict = str(parsed.get("verdict", "ambiguous")).lower()
+            reason  = str(parsed.get("reason", "")).strip()
+            if verdict not in ("yes", "ambiguous", "no"):
+                verdict = "ambiguous"
+
+        if verdict == "yes":       grounded    += 1
+        elif verdict == "ambiguous": ambiguous  += 1
+        else:                        hallucinated += 1
+        step_details.append({"step_id": step["step_id"], "verdict": verdict, "reason": reason})
+
+    total = len(joint_plan)
+    score = round(10.0 * (grounded + 0.5 * ambiguous) / total, 2) if total > 0 else 0.0
+    ev    = f"Grounded={grounded} Ambiguous={ambiguous} Hallucinated={hallucinated} / {total}"
+    detail = {"grounded": grounded, "ambiguous": ambiguous,
+              "hallucinated": hallucinated, "total_steps": total,
+              "step_details": step_details}
+    return score, ev, detail
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SC — Sequential Coherence
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _dfs_cycles(joint_plan: List[Dict], valid_ids: Set[int]) -> List[int]:
+    graph = {s["step_id"]: [] for s in joint_plan}
+    for step in joint_plan:
+        for d in (step.get("depends_on") or []):
+            if d in valid_ids:
+                graph[step["step_id"]].append(d)
+    color: Dict[int, str] = {sid: "white" for sid in graph}
+    in_cycle: Set[int]    = set()
+
+    def dfs(node: int, path: List[int]):
+        color[node] = "gray"
+        path.append(node)
+        for nb in graph.get(node, []):
+            if color[nb] == "gray":
+                for n in path[path.index(nb):]:
+                    in_cycle.add(n)
+            elif color[nb] == "white":
+                dfs(nb, path)
+        path.pop()
+        color[node] = "black"
+
+    for sid in list(graph.keys()):
+        if color[sid] == "white":
+            dfs(sid, [])
+    return sorted(in_cycle)
+
+
+def _compute_sc(joint_plan: List[Dict]) -> Tuple[float, str, Dict]:
+    valid_ids = {s["step_id"] for s in joint_plan}
+    step_map  = {s["step_id"]: s for s in joint_plan}
+
+    # 체크 1: 잘못된 참조
+    invalid_ref_steps = []
+    for step in joint_plan:
+        deps    = step.get("depends_on") or []
+        invalid = [d for d in deps if d not in valid_ids]
+        if invalid:
+            invalid_ref_steps.append(step["step_id"])
+
+    # 체크 2: 순환 의존성
+    cycle_steps = _dfs_cycles(joint_plan, valid_ids)
+
+    # 체크 3: 시간 충돌
+    time_conflict_steps = []
+    for step in joint_plan:
+        step_start = step.get("time_min")
+        if step_start is None: continue
+        for dep_id in (step.get("depends_on") or []):
+            if dep_id not in valid_ids: continue
+            dep       = step_map[dep_id]
+            dep_start = dep.get("time_min")
+            dep_dur   = dep.get("duration_min")
+            if dep_start is None: continue
+            dep_end = dep_start + dep_dur if dep_dur is not None else dep_start
+            if step_start < dep_end:
+                time_conflict_steps.append(step["step_id"])
+                break
+
+    rule_problems = set(invalid_ref_steps + cycle_steps + time_conflict_steps)
+
+    # 체크 4: LLM 의미적 역순 탐지
+    pairs = []
+    for step in joint_plan:
+        if step["step_id"] in rule_problems: continue
+        for dep_id in (step.get("depends_on") or []):
+            if dep_id in valid_ids and dep_id not in rule_problems:
+                pairs.append({
+                    "step_id"   : step["step_id"],
+                    "dep_id"    : dep_id,
+                    "action"    : step["action"],
+                    "dep_action": step_map[dep_id]["action"],
+                })
+
+    semantic_error_steps: List[int] = []
+    if pairs:
+        pairs_str = "\n".join(
+            f'  {i+1}. "{p["action"]}" cannot start until "{p["dep_action"]}" is finished'
+            for i, p in enumerate(pairs)
+        )
+        prompt = (f"{pairs_str}\n\nJudge whether each order is correct or clearly reversed.\n"
+                  f"Mark INVALID only if obviously backwards. Default VALID.\n"
+                  f'[{{"pair_index":1,"valid":true/false,"reason":"..."}}...]')
+        raw    = _llm("You are a robot task planner evaluator. Respond ONLY with valid JSON.",
+                      prompt, max_tokens=600)
+        parsed = _parse_json(raw)
+        if isinstance(parsed, list):
+            for item in parsed:
+                idx = item.get("pair_index", 0) - 1
+                if 0 <= idx < len(pairs) and not item.get("valid", True):
+                    semantic_error_steps.append(pairs[idx]["step_id"])
+
+    problem_steps = sorted(rule_problems | set(semantic_error_steps))
+    total         = len(joint_plan)
+    error_rate    = len(problem_steps) / total if total > 0 else 0.0
+    score         = round(10.0 * (1 - error_rate) ** 2, 2)
+    ev = (f"InvalidRef={len(invalid_ref_steps)} Cycles={len(cycle_steps)} "
+          f"TimeConflict={len(time_conflict_steps)} Semantic={len(semantic_error_steps)} "
+          f"/ {total} steps")
+    detail = {
+        "invalid_ref_steps": invalid_ref_steps, "cycle_steps": cycle_steps,
+        "time_conflict_steps": time_conflict_steps,
+        "semantic_error_steps": semantic_error_steps,
+        "problem_steps": problem_steps, "error_rate": round(error_rate, 4),
+    }
+    return score, ev, detail
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CQ — Collaboration Quality
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _compute_cq(offers: Dict, negotiation: Dict,
+                joint_plan: List[Dict]) -> Tuple[float, str, Dict]:
+    # 1단계: invalid handoff
+    invalid_steps: Set[int] = set()
+    for step in joint_plan:
+        ht = step.get("handoff_type")
+        ta = step.get("target_agent")
+        if not ht or not ta: continue
+        can_do = offers.get(ta, {}).get("can_do", [])
+        action = step.get("action", "")
+        matched = any(action.lower() in c.lower() or c.lower() in action.lower()
+                      for c in can_do)
+        if not matched:
+            invalid_steps.add(step["step_id"])
+
+    # 1단계: no change
+    initial_actions: Set[str] = set()
+    for ak, offer in offers.items():
+        for s in offer.get("initial_plan", []):
+            initial_actions.add(s.get("action", "").strip().lower())
+    final_actions = {s.get("action", "").strip().lower() for s in joint_plan}
+    # rounds=0이면 협상 자체가 없었던 경우 → no_change 체크 스킵
+    no_change = (negotiation.get("rounds", 0) > 0) and bool(initial_actions) and (initial_actions == final_actions)
+
+    total        = len(joint_plan)
+    problem_cnt  = len(invalid_steps) + (total if no_change else 0)
+    problem_rate = min(1.0, problem_cnt / total) if total > 0 else 0.0
+
+    # 2단계: LLM 협상 품질
+    initial_str = "\n".join(
+        f"  [{ak}] step{s['step_id']}: {s['action']}"
+        for ak, offer in offers.items()
+        for s in offer.get("initial_plan", [])
+    ) or "  (not available)"
+
+    neg_str = "\n".join(
+        f"  Round {r['round_num']}: A={[str(p) for p in r.get('proposals_a',[])]}"
+        f" B={[str(p) for p in r.get('proposals_b',[])]} locked={r.get('locked_step_ids',[])}"
+        for r in negotiation.get("history", [])
+    ) or "  (no negotiation)"
+
+    final_str = "\n".join(
+        f"  step{s['step_id']} [{s.get('agent_id')}] {s['action']}"
+        + (f" [{s.get('handoff_type')}→{s.get('target_agent')}]" if s.get("handoff_type") else "")
+        for s in joint_plan
+    )
+
+    invalid_str = "\n".join(
+        f"  step{sid}: invalid handoff" for sid in invalid_steps
+    ) or "  (none)"
+
+    prompt = (f"## Initial Plans\n{initial_str}\n\n"
+              f"## Negotiation ({negotiation.get('rounds',0)} rounds)\n{neg_str}\n\n"
+              f"## Final Plan\n{final_str}\n\n"
+              f"## Invalid Handoffs\n{invalid_str}\n\n"
+              f"Score 0.0-1.0: 1.0=clearly improved, 0.5=neutral, 0.0=unchanged/worsened.\n"
+              f"Invalid handoffs lower the score significantly.\n"
+              f'{{"quality_score":0.0,"reason":"one sentence"}}')
+
+    raw    = _llm("You are a robot task planner evaluator. Respond ONLY with valid JSON.",
+                  prompt, max_tokens=200)
+    parsed = _parse_json(raw)
+    quality = max(0.0, min(1.0, float(parsed.get("quality_score", 0.5))))
+    reason  = str(parsed.get("reason", "")).strip()
+
+    score = round(10.0 * (1 - problem_rate) * quality, 2)
+    ev    = (f"InvalidHandoffs={len(invalid_steps)} NoChange={no_change} "
+             f"quality={quality:.2f} — {reason[:50]}")
+    detail = {"invalid_handoff_count": len(invalid_steps), "no_change": no_change,
+              "problem_rate": round(problem_rate, 4), "negotiation_quality": round(quality, 4)}
+    return score, ev, detail
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HQE — Human Query Efficiency
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _compute_hqe(offers: Dict, joint_plan: List[Dict],
+                 hq_asked: List[str], human_answers: Dict[str, str],
+                 img_map: Dict[str, str], room_map: Dict[str, str]) -> Tuple[float, str, Dict]:
+    _SYS = "You are a robot task planner evaluator. Respond ONLY with valid JSON."
+
+    offer_str = "\n".join(
+        f"  [{ak}] can_do={offer.get('can_do',[])} | "
+        f"cannot_do={[c['action'] if isinstance(c,dict) else c for c in offer.get('cannot_do',[])]}"
+        for ak, offer in offers.items()
+    )
+    plan_str = "\n".join(
+        f"  step{s['step_id']} [{s.get('agent_id')}] {s['action']}" for s in joint_plan
+    )
+
+    if not hq_asked:
+        # query 없음: 물어봤어야 했는지 판단
+        content: List[Dict] = []
+        for ak, img_path in img_map.items():
+            if img_path and os.path.exists(img_path):
+                content.extend(_image_block(img_path, f"{ak} — {room_map.get(ak, ak)}"))
+        content.append({"type": "text", "text":
+            f"## Agent Offers\n{offer_str}\n\n## Final Plan\n{plan_str}\n\n"
+            f"Was there anything the agents could NOT determine from images/offers alone "
+            f"and SHOULD have asked the human?\n"
+            f'{{"should_have_asked":true/false,"reason":"one sentence"}}'})
+        raw    = _llm(_SYS, content, max_tokens=150)
+        parsed = _parse_json(raw)
+        should = bool(parsed.get("should_have_asked", False))
+        reason = str(parsed.get("reason", "")).strip()
+        score  = 5.0 if should else 9.0
+        ev     = f"No queries. Should have asked={should} — {reason[:55]}"
+        detail = {"mode": "no_query", "should_have_asked": should}
+        return score, ev, detail
+
+    # query 있음: 개별 NECESSARY 판단
+    qa_str = "\n".join(
+        f"  Q{i+1}: {q}\n  A{i+1}: {human_answers.get(q,'(no answer)')}"
+        for i, q in enumerate(hq_asked)
+    )
+    content = []
+    for ak, img_path in img_map.items():
+        if img_path and os.path.exists(img_path):
+            content.extend(_image_block(img_path, f"{ak} — {room_map.get(ak, ak)}"))
+    content.append({"type": "text", "text":
+        f"## Offers\n{offer_str}\n\n## Q&A\n{qa_str}\n\n## Plan\n{plan_str}\n\n"
+        f"For each query: NECESSARY if agent couldn't determine from images/offers alone, "
+        f"UNNECESSARY otherwise.\n"
+        f'[{{"query_index":1,"verdict":"necessary"/"unnecessary","reason":"..."}}...]'})
+    raw    = _llm(_SYS, content, max_tokens=600)
+    parsed = _parse_json(raw)
+
+    results = parsed if isinstance(parsed, list) else []
+    unnecessary = sum(1 for r in results if str(r.get("verdict","")).lower() == "unnecessary")
+    necessary   = len(hq_asked) - unnecessary
+    rate        = unnecessary / len(hq_asked) if hq_asked else 0.0
+    score       = round(10.0 * (1 - rate), 2)
+    ev          = f"Necessary={necessary} Unnecessary={unnecessary} / {len(hq_asked)} queries"
+    detail      = {"mode": "with_query", "necessary": necessary,
+                   "unnecessary": unnecessary, "total": len(hq_asked),
+                   "query_details": results}
+    return score, ev, detail
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DC — Dialogue Cost
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _compute_dc(negotiation: Dict) -> Tuple[float, str, Dict]:
+    rounds   = negotiation.get("rounds", 0)
+    messages = sum(
+        len(r.get("proposals_a", [])) + len(r.get("proposals_b", []))
+        for r in negotiation.get("history", [])
+    )
+    # rounds=0이면 협상 자체가 없었던 경우 → 만점
+    if rounds == 0:
+        return 10.0, "No negotiation needed (0 rounds, 0 messages)", {
+            "rounds": 0, "messages": 0, "round_score": 1.0, "message_score": 1.0
+        }
+    round_score   = max(0.0, 1.0 - (rounds - 1) / DC_MAX_ROUNDS)
+    message_score = max(0.0, 1.0 - (max(1, messages) - 1) / DC_MAX_MESSAGES)
+    score = round(10.0 * (DC_ALPHA * round_score + DC_BETA * message_score), 2)
+    ev    = f"Rounds={rounds} Messages={messages} → round_s={round_score:.3f} msg_s={message_score:.3f}"
+    detail = {"rounds": rounds, "messages": messages,
+              "round_score": round(round_score, 4),
+              "message_score": round(message_score, 4)}
+    return score, ev, detail
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 메인 judge 함수
 # ══════════════════════════════════════════════════════════════════════════════
 
 def judge(
@@ -490,7 +693,7 @@ def judge(
     verbose: bool = True,
 ) -> JudgeReport:
     """
-    run() 결과를 받아 7개 지표를 단일 LLM 호출로 평가한다.
+    p2p_main.run() 결과를 받아 7개 지표를 평가한다.
 
     Args:
         result  : p2p_main.run() 반환값
@@ -502,78 +705,84 @@ def judge(
         JudgeReport
     """
     task_id      = result["task_id"]
+    task         = result["task"]
+    joint_plan   = result["joint_plan"]
+    offers_raw   = result["offers"]
+    negotiation  = result["negotiation"]
+    hq_asked     = result.get("hq_asked", [])
+    human_answers= result.get("human_answers", {})
     ground_truth = _load_ground_truth(task_id)
 
+    img_map  = {"agent_A": img_a, "agent_B": img_b}
+    room_map = {
+        "agent_A": offers_raw.get("agent_A", {}).get("room_type", "agent_A"),
+        "agent_B": offers_raw.get("agent_B", {}).get("room_type", "agent_B"),
+    }
+
+    # offers에 initial_plan 주입 (local_plans에서 추출)
+    offers = {}
+    for ak in ("agent_A", "agent_B"):
+        offer_data = dict(offers_raw.get(ak, {}))
+        local_plan = result.get("local_plans", {}).get(ak, {})
+        offer_data["initial_plan"] = local_plan.get("steps", [])
+        offers[ak] = offer_data
+
     if verbose:
-        print("\n" + "═" * 60)
-        print("  LLM-AS-A-JUDGE")
+        print("\n" + "═" * 65)
+        print("  P2P JUDGE — 7 METRICS")
         print(f"  Task  : {task_id}")
-        print(f"  GT    : {list(ground_truth.keys()) if ground_truth else 'not found'}")
-        print(f"  Plan  : {len(result['joint_plan'])} steps | "
-              f"Rounds: {result['negotiation']['rounds']}")
-        print("═" * 60)
+        print(f"  Plan  : {len(joint_plan)} steps | "
+              f"Rounds: {negotiation['rounds']} | "
+              f"HQ: {len(hq_asked)}")
+        print("═" * 65)
 
-    # ── Embedding 기반 TS 사전 계산 ──────────────────────────────────────────
-    ts_cov = None
-    if ground_truth:
-        if verbose:
-            print("  [TS] Computing embedding similarity...")
-        ts_cov = compute_ts_coverage(
-            ground_truth = ground_truth,
-            joint_plan   = result["joint_plan"],
-            verbose      = False,
+    # ── 각 지표 계산 ─────────────────────────────────────────────────────────
+    def _run(key: str, fn, *args):
+        if verbose: print(f"  [{key}] computing...")
+        score, ev, detail = fn(*args)
+        if verbose: print(f"  [{key}] score={score:.2f}")
+        return score, ev, detail
+
+    ts_score,  ts_ev,  ts_det  = _run("TS",  _compute_ts,  ground_truth, joint_plan)
+    pe_score,  pe_ev,  pe_det  = _run("PE",  _compute_pe,  offers, joint_plan)
+    oc_score,  oc_ev,  oc_det  = _run("OC",  _compute_oc,  joint_plan, img_map, room_map)
+    sc_score,  sc_ev,  sc_det  = _run("SC",  _compute_sc,  joint_plan)
+    cq_score,  cq_ev,  cq_det  = _run("CQ",  _compute_cq,  offers, negotiation, joint_plan)
+    hqe_score, hqe_ev, hqe_det = _run("HQE", _compute_hqe, offers, joint_plan,
+                                       hq_asked, human_answers, img_map, room_map)
+    dc_score,  dc_ev,  dc_det  = _run("DC",  _compute_dc,  negotiation)
+
+    score_map = {"TS": ts_score, "PE": pe_score, "OC": oc_score, "SC": sc_score,
+                 "CQ": cq_score, "HQE": hqe_score, "DC": dc_score}
+    ev_map    = {"TS": ts_ev,    "PE": pe_ev,    "OC": oc_ev,    "SC": sc_ev,
+                 "CQ": cq_ev,    "HQE": hqe_ev,  "DC": dc_ev}
+    det_map   = {"TS": ts_det,   "PE": pe_det,   "OC": oc_det,   "SC": sc_det,
+                 "CQ": cq_det,   "HQE": hqe_det, "DC": dc_det}
+
+    metrics = [
+        MetricScore(
+            key     = k,
+            name    = EVAL_METRIC_NAMES[k],
+            score   = score_map[k],
+            evidence= ev_map[k],
+            weight  = EVAL_WEIGHTS[k],
+            detail  = det_map[k],
         )
-        if verbose:
-            print(f"  [TS] full={ts_cov['full_match']} partial={ts_cov['partial_match']} "
-                  f"miss={ts_cov['no_match']} / total={ts_cov['total_gt']} "
-                  f"→ score={ts_cov['ts_score']:.1f}")
+        for k in EVAL_WEIGHTS
+    ]
 
-    # ── LLM 호출 (TS 수치를 프롬프트에 포함) ─────────────────────────────────
-    prompt = _build_prompt(result, ground_truth, ts_cov)
-    raw    = _call_llm(prompt, img_a, img_b)
-    parsed = _parse_response(raw)
-
-    # DC는 라운드 수로 강제 고정 (LLM 판단 배제)
-    n_rounds = result["negotiation"]["rounds"]
-    dc_fixed = round(max(2.5, 10.0 - n_rounds * 2.5), 1)
-
-    metrics: List[MetricScore] = []
-    for key in EVAL_WEIGHTS:
-        entry = parsed.get(key, {})
-        if key == "DC":
-            score = dc_fixed
-        elif key == "TS" and ts_cov is not None:
-            # embedding 점수를 강제 고정 (LLM 자의적 판단 배제)
-            score = ts_cov["ts_score"]
-        else:
-            score = _safe_score(entry.get("score", 5.0))
-        ev = str(entry.get("evidence", "")).strip() or "(no evidence)"
-        if key == "TS" and ts_cov is not None:
-            ev = (f"Embedding coverage: {ts_cov['full_match']} full + "
-                  f"{ts_cov['partial_match']} partial / {ts_cov['total_gt']} GT items "
-                  f"(rate={ts_cov['coverage_rate']:.2f})")
-        metrics.append(MetricScore(
-            key      = key,
-            name     = EVAL_METRIC_NAMES.get(key, key),
-            score    = score,
-            evidence = ev,
-            weight   = EVAL_WEIGHTS[key],
-        ))
-
-    weighted  = sum(m.score * m.weight for m in metrics)
-    verdict   = "accept" if weighted >= 7.5 else ("revise" if weighted >= 5.0 else "reject")
-    worst     = min(metrics, key=lambda m: m.score)
-    top_issue = f"{worst.name} ({worst.key}): {worst.score:.1f}/10"
+    weighted = sum(m.score * m.weight for m in metrics)
+    verdict  = "accept" if weighted >= 7.5 else ("revise" if weighted >= 5.0 else "reject")
+    worst    = min(metrics, key=lambda m: m.score)
+    top_issue= f"{worst.name} ({worst.key}): {worst.score:.1f}/10"
 
     report = JudgeReport(
         task_id        = task_id,
-        task           = result["task"],
+        task           = task,
         metrics        = metrics,
         final_weighted = round(weighted, 3),
         verdict        = verdict,
         top_issue      = top_issue,
-        raw_response   = raw,
-        ts_coverage    = ts_cov,
     )
 
     if verbose:
@@ -587,38 +796,24 @@ def judge(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def print_report(report: JudgeReport):
-    print(f"\n  {'─'*56}")
-    print(f"  {'Key':<5} {'Metric':<28} {'Score':>5}   Evidence")
-    print(f"  {'─'*56}")
+    print(f"\n  {'─'*62}")
+    print(f"  {'Key':<5} {'Metric':<30} {'W':>4}  {'Score':>5}  Bar")
+    print(f"  {'─'*62}")
     for m in report.metrics:
         bar = "█" * int(m.score) + "░" * (10 - int(m.score))
-        print(f"  {m.key:<5} {m.name:<28} {m.score:>5.1f}   {bar}")
-        print(f"        ↳ {m.evidence[:68]}")
-    print(f"  {'─'*56}")
-    print(f"  {'WEIGHTED TOTAL':<34} {report.final_weighted:>6.3f} / 10")
-    print(f"  {'VERDICT':<34} {report.verdict.upper()}")
-    print(f"  {'TOP ISSUE':<34} {report.top_issue}")
-    print(f"  {'═'*56}")
-
-    # TS coverage 상세 출력
-    if report.ts_coverage:
-        cov = report.ts_coverage
-        print(f"\n  TS Coverage Detail (embedding cosine similarity)")
-        print(f"  {'─'*56}")
-        print(f"  Full match  (≥0.80): {cov['full_match']:>3} / {cov['total_gt']}")
-        print(f"  Partial     (≥0.60): {cov['partial_match']:>3} / {cov['total_gt']}")
-        print(f"  No match    (<0.60): {cov['no_match']:>3} / {cov['total_gt']}")
-        print(f"  Coverage rate      : {cov['coverage_rate']:.3f}")
-        if cov["unmatched_gt"]:
-            print(f"  Unmatched GT items:")
-            for u in cov["unmatched_gt"]:
-                print(f"    ✗ {u}")
-        print(f"  {'─'*56}")
+        print(f"  {m.key:<5} {m.name:<30} {m.weight:>4.2f}  {m.score:>5.1f}  {bar}")
+        print(f"        ↳ {m.evidence[:65]}")
+    print(f"  {'─'*62}")
+    print(f"  {'WEIGHTED TOTAL':<36} {report.final_weighted:>6.3f} / 10")
+    print(f"  {'VERDICT':<36} {report.verdict.upper()}")
+    print(f"  {'TOP ISSUE':<36} {report.top_issue}")
+    print(f"  {'═'*62}")
 
 
 def save_report(report: JudgeReport, path: str):
+    data = asdict(report)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(asdict(report), f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"  Saved: {path}")
 
 
@@ -631,17 +826,6 @@ def judge_batch(
     img_a:   str,
     img_b:   str,
 ) -> List[JudgeReport]:
-    """
-    run_ablation() 결과 리스트 전체를 평가한다.
-
-    사용 예:
-        from p2p_ablation import run_ablation
-        from p2p_judge_simple import judge_batch, print_batch_summary
-
-        results = run_ablation("task_001", img_a=IMG_A, img_b=IMG_B)
-        reports = judge_batch(results, img_a=IMG_A, img_b=IMG_B)
-        print_batch_summary(reports)
-    """
     reports = []
     for r in results:
         label = r.get("label", r.get("task_id", "?"))
@@ -654,11 +838,11 @@ def judge_batch(
 def print_batch_summary(reports: List[JudgeReport]):
     keys = list(EVAL_WEIGHTS.keys())
     print("\n" + "█" * 80)
-    print("  ABLATION — LLM JUDGE SUMMARY")
+    print("  ABLATION — JUDGE SUMMARY")
     print("█" * 80)
     header = f"  {'Method':<22} " + "  ".join(f"{k:>5}" for k in keys) + f"  {'Total':>6}  Verdict"
     print(header)
-    print(f"  {'─'*74}")
+    print(f"  {'─'*76}")
     for r in reports:
         s_str = "  ".join(
             f"{next((m.score for m in r.metrics if m.key == k), 0.0):>5.1f}"
