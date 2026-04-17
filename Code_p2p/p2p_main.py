@@ -39,7 +39,7 @@ from p2p_phases import (
     plan_steps_to_dicts,
     _kw,
 )
-from p2p_utils import _banner, jdump
+from p2p_utils import compute_joint_uncertainty, _banner, jdump
 
 _BASE      = Path(__file__).parent.parent
 TASKS_PATH = _BASE / "Data" / "Task" / "tasks.json"
@@ -157,7 +157,8 @@ def run(
     # ── Phase 6 ──────────────────────────────────────────────────────────────
     human_answers, hq_triggers, hq_asked = phase6_human_query(
         plan_a, plan_b, offer_a, offer_b,
-        convergence, img_a, img_b,
+        img_a, img_b,
+        task=task,
         use_human_query=use_human_query,
     )
 
@@ -165,7 +166,7 @@ def run(
     joint = phase_finalize(
         neg_steps_a, neg_steps_b,
         offer_a, offer_b,
-        human_answers, convergence,
+        human_answers,
         verbose=verbose,
     )
 
@@ -208,20 +209,22 @@ def run(
     matched_pass  = len(pass_steps & all_deps)
     handoff_match = matched_pass / max(len(pass_steps), 1) if pass_steps else 1.0
 
+    U_joint = compute_joint_uncertainty(joint)
+
     metrics = {
         # 플랜 품질 지표 (핵심)
         "handoff_match_rate":  round(handoff_match, 3),
         "cross_agent_deps":    cross_deps,
         "conflict_reduction":  round(conflict_reduction, 3),
         "observability_rate":  round(observability_rate, 3),
+        "U_joint":             U_joint,
         # 협상/HQ 지표
         "negotiation_rounds":  len(neg_rounds),
         "hq_triggered":        len(hq_triggers),
         "hq_asked":            len(hq_asked),
-        # 시스템 안정성 (참고용)
+        # 참고용
         "conflicts":           n_conflicts,
         "conflicts_after":     len(convergence.unresolved_conflicts),
-        "system_stability":    1.0 if convergence.converged else 0.0,
     }
 
     # ── 최종 출력 ─────────────────────────────────────────────────────────────
@@ -234,7 +237,7 @@ def run(
     print(f"  {'─'*40}")
     for k, v in metrics.items():
         print(f"  {k:<28} {v}")
-    print(f"  system_stability: {'stable ✓' if convergence.converged else 'unstable (see conflicts)'}")
+
 
     return {
         "label":   label,
