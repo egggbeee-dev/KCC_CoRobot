@@ -84,85 +84,6 @@
     }
   },
   {
-    "id": "task_005",
-    "description": "Create a comfortable resting environment using the bedroom and living room. Adjust lighting, seating, and ambient conditions in both rooms to promote relaxation.",
-    "ground_truth": {
-      "bedroom": [
-        "Turn off the main lights",
-        "Turn on ambient lighting",
-        "Arrange blankets for a comfortable setting",
-        "Arrange pillows for a comfortable setting",
-        "Turn off electronic devices"
-      ],
-      "living room": [
-        "Arrange cushions on the sofa for comfortable reclining",
-        "Turn off the main lights",
-        "Turn on ambient lighting",
-        "Turn off the TV",
-        "Place cushions near the seating area"
-      ]
-    }
-  },
-  {
-    "id": "task_006",
-    "description": "It is getting dark. Check all light sources in the living room and bedroom and configure them for adequate evening use.",
-    "ground_truth": {
-      "bedroom": [
-        "Turn on the main lights",
-        "Close curtains or blinds for privacy",
-        "Confirm lights are off in unused areas"
-      ],
-      "living room": [
-        "Turn on the main lights",
-        "Adjust brightness according to the activity",
-        "Close the curtains to block outside view and retain warmth"
-      ]
-    }
-  },
-  {
-    "id": "task_007",
-    "description": "There is a bad smell in the house. Inspect the living room and bedroom to identify possible sources of the smell without performing full cleaning.",
-    "ground_truth": {
-      "bedroom": [
-        "Check for traces of food left behind",
-        "Check for traces of drinks left behind",
-        "Check the duvet for possible contamination or odor",
-        "Check the pillow for possible contamination or odor",
-        "Check whether poor ventilation may have caused odor buildup",
-        "Identify possible candidates for the source of the smell"
-      ],
-      "living room": [
-        "Check for traces of spilled food on the table",
-        "Check for traces of spilled drinks on the table",
-        "Check for traces of spilled drinks on the sofa",
-        "Check for traces of spilled food on the sofa",
-        "Check if there is contamination on the floor",
-        "Check if there is trash on the floor",
-        "Identify possible candidates for the source of the smell"
-      ]
-    }
-  },
-  {
-    "id": "task_008",
-    "description": "Identify and remove hazards for a toddler in the bedroom and bathroom. Determine which room is more dangerous and prioritize it.",
-    "ground_truth": {
-      "bedroom": [
-        "Remove small objects from the floor",
-        "Remove small objects from the table",
-        "Remove sharp objects",
-        "Check the tipping hazard of heavy furniture",
-        "Organize floor cables",
-        "Check for outlet covers"
-      ],
-      "bathroom": [
-        "Remove sharp objects",
-        "Check for standing water in the bathtub",
-        "Close the toilet lid",
-        "Prioritize bathroom actions given the higher level of risk"
-      ]
-    }
-  },
-  {
     "id": "task_009",
     "description": "Prepare the house for an overnight work session. Set up the bedroom as the main workspace and ensure the kitchen is prepared to support long hours of work, including making coffee using a coffee machine.",
     "ground_truth": {
@@ -222,20 +143,6 @@
         "Check for food items",
         "Check for items plugged into outlets",
         "Ensure no electronic devices are running"
-      ]
-    }
-  },
-  {
-    "id": "task_012",
-    "description": "Prepare the living room and bedroom floors for an automated robotic vacuum cycle.",
-    "ground_truth": {
-      "living room": [
-        "Remove objects on the living room floor",
-        "Identify movable objects across the entire floor"
-      ],
-      "bedroom": [
-        "Remove objects on the bedroom floor",
-        "Identify movable objects across the entire floor"
       ]
     }
   },
