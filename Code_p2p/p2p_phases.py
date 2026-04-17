@@ -416,6 +416,10 @@ def _parse_local_plan(
         action = str(item.get("action", "")).strip()
         if not action:
             continue
+        # action 이름에 포함된 PASS/NOTIFY 텍스트 제거
+        action = re.sub(r"\s*\[[→→]\s*PASS to \w+\]", "", action, flags=re.IGNORECASE).strip()
+        action = re.sub(r"\s*\[[→→]\s*NOTIFY \w+\]", "", action, flags=re.IGNORECASE).strip()
+        action = re.sub(r"\s*\(PASS\)", "", action, flags=re.IGNORECASE).strip()
 
         akey = frozenset(_kw(action))
         if akey and akey in seen_act:
@@ -1378,65 +1382,78 @@ def phase6_human_query(
     img_a: str, img_b: str,
     use_human_query: bool = True,
 ) -> Tuple[Dict[str, str], List[str], List[str]]:
+    """
+    HQ는 두 에이전트가 이미지만으로 절대 알 수 없는 정보에 대해서만 발동.
+    REDUNDANCY, OBSERVABILITY, DEPENDENCY는 협상/rule로 해결.
+    UNMATCHED 중 실제로 외부 정보가 필요한 것만 human에게 질문.
+    답변은 에이전트에게 context로 전달 → mini re-planning.
+    코드가 플랜을 직접 수정하지 않음.
+    """
     _banner("PHASE 6 — DEFERRED HUMAN QUERY")
 
     if not use_human_query:
         print("  [ABLATION] disabled.")
         return {}, [], []
 
-    if convergence.converged and not convergence.unresolved_conflicts:
-        print("  Plan converged → no query needed.")
-        return {}, [], []
-
-    raw_triggers: List[Tuple[str, str, float]] = []
-    triggered:    List[str] = []
-
-    if not convergence.no_dep_cycle:
-        d = "Dependency cycle detected."
-        triggered.append(f"[DEP_CYCLE] {d}")
-        raw_triggers.append(("DEP_CYCLE", d, 0.90))
-
-    if not convergence.no_missing_deps:
-        d = "PASS step has no matching receive step."
-        triggered.append(f"[DEPENDENCY] {d}")
-        raw_triggers.append(("DEPENDENCY", d, 0.85))
-
-    if not convergence.observability_ok:
-        d = "A step references objects outside visible scope."
-        triggered.append(f"[OBSERVABILITY] {d}")
-        raw_triggers.append(("OBSERVABILITY", d, 0.75))
-
-    for c in convergence.unresolved_conflicts:
-        triggered.append(f"[{c.conflict_type}] {c.description}")
-        raw_triggers.append((c.conflict_type, c.description, 0.80))
-
+    # ── HQ 발동 조건: UNMATCHED 중 이미지로 알 수 없는 것만 ──────────────────
     _INFO_KW = {"confirmation","confirm","ready","status","notify",
-                "check","verified","done","complete","that","whether"}
+                "check","verified","done","complete","whether"}
+    # 이미지로 판단 가능한 것들 — HQ 불필요
+    _SOLVABLE_KW = {"light","lamp","curtain","window","pillow","blanket",
+                    "laptop","desk","table","chair","counter","shelf"}
+
+    hq_candidates = []
+    for c_entry in convergence.unresolved_conflicts:
+        # UNMATCHED만 HQ 대상
+        if c_entry.conflict_type not in (
+            ConflictType.UNMATCHED,
+        ):
+            continue
+        desc = c_entry.description.lower()
+        # 이미지로 판단 가능한 것은 스킵
+        if any(kw in desc for kw in _SOLVABLE_KW):
+            continue
+        # 정보성 need는 스킵
+        if any(kw in desc for kw in _INFO_KW):
+            continue
+        hq_candidates.append(c_entry)
+
+    # need_from_other 중 아무도 제공 못 하는 것
     all_provides = offer_a.can_provide + offer_b.can_provide
     for need in offer_a.need_from_other + offer_b.need_from_other:
-        # 정보성 need (confirmation 류)는 UNMATCHED 탐지 제외
         if _kw(need) & _INFO_KW:
             continue
+        if any(kw in need.lower() for kw in _SOLVABLE_KW):
+            continue
         if not any(_fuzzy_match_soft(need, p) for p in all_provides):
-            d = f"No agent can provide: '{need}'"
-            triggered.append(f"[UNMATCHED] {d}")
-            raw_triggers.append(("UNMATCHED", d, 0.75))
+            # 진짜 UNMATCHED
+            from p2p_models import ConflictEntry, ConflictType
+            hq_candidates.append(ConflictEntry(
+                conflict_type=ConflictType.UNMATCHED,
+                step_ids=[], agent_ids=[],
+                description=f"Neither agent can provide: '{need}'",
+                fix_hint="Ask human for clarification.",
+            ))
 
-    if not triggered:
-        print("  No query needed.")
+    if not hq_candidates:
+        print("  No HQ needed — all conflicts solvable by agents.")
         return {}, [], []
 
-    print(f"  Triggers ({len(triggered)}):")
-    for t in triggered:
-        print(f"    {t}")
+    print(f"  HQ triggers ({len(hq_candidates)}):")
+    for h in hq_candidates:
+        print(f"    [{h.conflict_type}] {h.description[:80]}")
 
-    raw_triggers.sort(key=lambda x: -x[2])
+    # ── Human에게 질문 ──────────────────────────────────────────────────────
     answers: Dict[str, str] = {}
     asked:   List[str]      = []
+    triggered = [f"[{h.conflict_type}] {h.description}" for h in hq_candidates]
 
-    for i, (ttype, detail, pri) in enumerate(raw_triggers[:HQ_TOP_K], 1):
-        print(f"\n  Generating Q{i} [{ttype}]...", end=" ", flush=True)
-        q = _generate_hq_question(ttype, detail, offer_a, offer_b, img_a)
+    for i, c_entry in enumerate(hq_candidates[:HQ_TOP_K], 1):
+        print(f"\n  Generating Q{i}...", end=" ", flush=True)
+        q = _generate_hq_question(
+            str(c_entry.conflict_type), c_entry.description,
+            offer_a, offer_b, img_a,
+        )
         print("done")
         print(f"  Q{i}: {q}")
         asked.append(q)
@@ -1452,6 +1469,66 @@ def phase6_human_query(
 
         if ans:
             answers[q] = ans
+
+    # ── 답변을 에이전트에게 전달 → mini re-planning ─────────────────────────
+    if answers:
+        _banner("PHASE 6b — MINI RE-PLANNING (with human context)")
+        hq_context = "\n".join(f"Q: {q}\nA: {a}" for q, a in answers.items())
+
+        def _mini_replan(plan: LocalPlan, offer: Offer, img: str) -> LocalPlan:
+            current_steps = "\n".join(
+                f"  Step {i+1}: {s.action}"
+                + (f" [PASS→{s.target_agent}]" if s.handoff_type=="PASS" else "")
+                for i, s in enumerate(plan.steps)
+            )
+            prompt = f"""You are {offer.agent_id} ({offer.room_type}).
+Global task context and human clarification:
+{hq_context}
+
+YOUR CURRENT PLAN:
+{current_steps}
+
+Based on the human's answers above, update your plan if needed.
+- Only modify steps that are directly affected by the human's answers.
+- Do NOT change steps that are already correct.
+- If no changes needed, return the same plan.
+- Steps ONLY in {offer.room_type}, using ONLY visible objects.
+- Return ONLY valid JSON inside <JSON> tags.
+
+<JSON>
+{{"plan_steps": [
+  {{"step_id":1,"time_min":1,"action":"...",
+    "preconditions":[],"depends_on":[],"handoff_type":null,
+    "target_agent":null,"uncertainty":0.1,"notes":""}}
+]}}
+</JSON>"""
+            try:
+                raw, logp = run_vlm(img, prompt)
+                new_plan = _parse_local_plan(raw, logp, offer,
+                                             step_offset=plan.steps[0].step_id - 1
+                                             if plan.steps else 0)
+                if new_plan.steps:
+                    print(f"  [{offer.agent_id}] re-planned: {len(new_plan.steps)} steps")
+                    return new_plan
+            except Exception as e:
+                print(f"  [{offer.agent_id}] re-plan failed: {e}")
+            return plan  # 실패 시 원본 유지
+
+        results = _run_parallel([
+            (img_a, "", False),  # dummy — 실제로는 직접 호출
+            (img_b, "", False),
+        ])
+        # 병렬로 mini re-planning
+        with __import__('concurrent.futures', fromlist=['ThreadPoolExecutor']).ThreadPoolExecutor(2) as ex:
+            fut_a = ex.submit(_mini_replan, plan_a, offer_a, img_a)
+            fut_b = ex.submit(_mini_replan, plan_b, offer_b, img_b)
+            new_a = fut_a.result()
+            new_b = fut_b.result()
+
+        # plan_a, plan_b를 in-place 업데이트
+        plan_a.steps[:] = new_a.steps
+        plan_b.steps[:] = new_b.steps
+        print("  Mini re-planning complete.")
 
     return answers, triggered, asked
 
@@ -1475,53 +1552,10 @@ def phase_finalize(
             print(f"    Q: {q[:65]}...")
             print(f"    A: {a}")
 
-    # HQ 답변 반영 — 안전하고 단순한 로직
-    _EXPLICIT_DELETE = {"delete", "remove", "없애", "제거", "삭제"}
-    _EXPLICIT_ADD    = {"yes", "add", "receive", "네", "추가"}
-
-    for q, a in human_answers.items():
-        a_lower = a.lower().strip()
-        a_words = set(a_lower.split())
-        q_lower = q.lower()
-
-        # OBSERVABILITY → "delete" 명시적으로 말할 때만 삭제
-        if "observability" in q_lower or "not visible" in q_lower or "invisible" in q_lower:
-            if a_words & _EXPLICIT_DELETE or a_lower in ("no", "delete", "remove"):
-                # obs_scope 위반 스텝 제거
-                pool_a = set(re.findall(r"\w+", offer_a.obs_scope.lower()))
-                pool_b = set(re.findall(r"\w+", offer_b.obs_scope.lower()))
-                for plan, pool in [(steps_a, pool_a), (steps_b, pool_b)]:
-                    to_rm = [s["step_id"] for s in plan
-                             if not s.get("handoff_type")
-                             and not (set(re.findall(r"\w+", s.get("action","").lower())) & pool)]
-                    for sid in to_rm[:1]:  # 최대 1개만
-                        plan[:] = [s for s in plan if s.get("step_id") != sid]
-                        print(f"  [FINALIZE] obs-violation step{sid} removed per HQ")
-
-        # DEPENDENCY → "yes/add" 말할 때 receive step 추가
-        elif "receive" in q_lower or "pickup" in q_lower or "dependency" in q_lower:
-            if a_words & _EXPLICIT_ADD:
-                pass_steps = [s for s in steps_a if s.get("handoff_type") == "PASS"]
-                has_recv   = any("receive" in s.get("action","").lower() for s in steps_b)
-                if pass_steps and not has_recv:
-                    ps = pass_steps[0]
-                    m  = re.search(r"carry (.+?) (?:to|for)", ps.get("action",""), re.I)
-                    item = m.group(1).strip() if m else "item"
-                    new_sid = max(s["step_id"] for s in steps_a + steps_b) + 1
-                    steps_b.append({
-                        "step_id":      new_sid,
-                        "time_min":     ps.get("time_min",0) + 1,
-                        "room":         steps_b[0].get("room","bedroom") if steps_b else "bedroom",
-                        "agent_id":     "agent_B",
-                        "action":       f"receive {item} from kitchen and place in room",
-                        "preconditions": [],
-                        "depends_on":   [ps["step_id"]],
-                        "handoff_type": None,
-                        "target_agent": None,
-                        "uncertainty":  0.15,
-                        "notes":        "added per HQ answer",
-                    })
-                    print(f"  [FINALIZE] receive step added: 'receive {item}' per HQ")
+    # HQ 답변은 phase6에서 에이전트 mini re-planning으로 이미 반영됨
+    # 코드가 플랜을 직접 수정하지 않음 (non-centralized 원칙)
+    if human_answers and verbose in ("full", "summary"):
+        print("  Human answers already reflected via agent re-planning in Phase 6b.")
 
     merged = list(steps_a) + list(steps_b)
     merged.sort(key=lambda s: (s.get("time_min", 0), s.get("step_id", 0)))
@@ -1573,7 +1607,34 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     lines.append(SEP)
     lines.append("")
 
-    sorted_plan = sorted(plan, key=lambda s: (s.get("time_min",0), s.get("step_id",0)))
+    # 위상 정렬: depends_on 기반으로 순서 결정 (time_min 무시)
+    def _topo_sort(steps):
+        from collections import defaultdict, deque
+        id_map = {s["step_id"]: s for s in steps}
+        in_deg = {s["step_id"]: 0 for s in steps}
+        graph  = defaultdict(list)
+        for s in steps:
+            for d in s.get("depends_on", []):
+                if d in id_map:
+                    graph[d].append(s["step_id"])
+                    in_deg[s["step_id"]] += 1
+        queue = deque(sorted(
+            [sid for sid, deg in in_deg.items() if deg == 0],
+            key=lambda sid: id_map[sid].get("step_id", 0)
+        ))
+        result = []
+        while queue:
+            sid = queue.popleft()
+            result.append(id_map[sid])
+            for nxt in sorted(graph[sid]):
+                in_deg[nxt] -= 1
+                if in_deg[nxt] == 0:
+                    queue.append(nxt)
+        # cycle 있으면 나머지 추가
+        done = {s["step_id"] for s in result}
+        result += [s for s in steps if s["step_id"] not in done]
+        return result
+    sorted_plan = _topo_sort(plan)
     for idx, s in enumerate(sorted_plan, 1):
         agent  = s.get("agent_id","?")
         room   = s.get("room","?")
