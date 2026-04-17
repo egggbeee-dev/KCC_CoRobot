@@ -51,7 +51,17 @@ def _norm_agent(x: Any) -> Optional[str]:
     s = str(x).strip()
     if s.lower() in {"", "none", "null", "unknown"} or "|" in s:
         return None
-    return s if s in VALID_AGENTS else None
+    if s in VALID_AGENTS:
+        return s
+    # room 이름으로 들어온 경우 — 맥락상 상대방 agent_B로 해석
+    _ROOM_KW = {"kitchen", "bedroom", "living", "bathroom", "room"}
+    if any(kw in s.lower() for kw in _ROOM_KW):
+        return "agent_B"  # 기본값: 상대방
+    # "agent_a" 같은 소문자 변형
+    sl = s.lower().replace("-","_").replace(" ","_")
+    if sl == "agent_a": return "agent_A"
+    if sl == "agent_b": return "agent_B"
+    return None
 
 
 def _norm_depends(v: Any) -> List[int]:
