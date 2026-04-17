@@ -1402,23 +1402,8 @@ def phase6_human_query(
     _SOLVABLE_KW = {"light","lamp","curtain","window","pillow","blanket",
                     "laptop","desk","table","chair","counter","shelf"}
 
+    # HQ 발동: need_from_other 중 아무도 제공 못 하는 것만
     hq_candidates = []
-    for c_entry in convergence.unresolved_conflicts:
-        # UNMATCHED만 HQ 대상
-        if c_entry.conflict_type not in (
-            ConflictType.UNMATCHED,
-        ):
-            continue
-        desc = c_entry.description.lower()
-        # 이미지로 판단 가능한 것은 스킵
-        if any(kw in desc for kw in _SOLVABLE_KW):
-            continue
-        # 정보성 need는 스킵
-        if any(kw in desc for kw in _INFO_KW):
-            continue
-        hq_candidates.append(c_entry)
-
-    # need_from_other 중 아무도 제공 못 하는 것
     all_provides = offer_a.can_provide + offer_b.can_provide
     for need in offer_a.need_from_other + offer_b.need_from_other:
         if _kw(need) & _INFO_KW:
@@ -1426,7 +1411,6 @@ def phase6_human_query(
         if any(kw in need.lower() for kw in _SOLVABLE_KW):
             continue
         if not any(_fuzzy_match_soft(need, p) for p in all_provides):
-            # 진짜 UNMATCHED — ConflictType에 없으므로 임시 객체로 처리
             class _FakeConflict:
                 conflict_type = "UNMATCHED"
                 description   = f"Neither agent can provide: '{need}'"
