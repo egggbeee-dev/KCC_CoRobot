@@ -157,40 +157,43 @@ EXAMPLE 2 — bedroom agent, same task:
 
 
 def _build_phase1_prompt(task: str) -> str:
-    return f"""You are an embodied home agent observing your room.
+    return f"""You are a home agent. Look at the room image carefully and generate a structured observation.
 
-Global task: "{task}"
+Task context: "{task}"
 
 {_P1_EXAMPLE}
 
-Generate your Offer for YOUR room only. Be faithful to what is actually visible.
+STRICT VISIBILITY RULE:
+- You may ONLY reference objects that are LITERALLY VISIBLE in the image.
+- If you cannot see it in the image, do NOT include it in can_do or obs_scope.
+- Every action in can_do must involve a specific object you can see.
+- Do NOT imagine or infer objects that are not visible.
 
 RULES:
-1. can_do: max {MAX_CAN_DO} actions using ONLY visible objects.
-   - Prioritize actions that DIRECTLY contribute to the global task.
-   - Format: "verb + specific visible object + purpose"
-2. cannot_do: max {MAX_CANNOT_DO}. reason: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
-3. conf: confidence [0.0–1.0] per can_do item.
-4. can_provide: items the OTHER AGENT genuinely needs from you to complete THEIR role.
-   - Ask: "Without this from me, can the other agent still do their job?"
-   - If YES → write []
-   - If NO  → include it (must be physically portable: tray, drink, document)
-   - Default to [] when unsure. Maximum 1 item.
-5. need_from_other: specific items you CANNOT complete your role without.
-   Must be physically deliverable. Write [] if you can work independently.
-6. Think about task roles: kitchen prepares food/drinks, bedroom sets up rest/work space.
-7. Return ONLY valid JSON inside <JSON> tags.
+1. obs_scope: list every object you can actually see (comma-separated nouns only).
+2. can_do: max {MAX_CAN_DO} actions. Each action must:
+   - Use ONLY objects listed in obs_scope.
+   - Start with a verb: "slice", "arrange", "carry", "clear", "dim", "brew", etc.
+   - Directly contribute to the global task goal.
+3. cannot_do: actions relevant to the task but NOT possible in your room.
+   reason: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
+4. can_provide: a SINGLE item you can physically carry to another room that the other agent needs.
+   - Only include if the other agent CANNOT complete their role without it.
+   - Must be physically portable (tray, drink, document). Write [] if unsure.
+5. need_from_other: specific item you need delivered from the other room.
+   Write [] if you can complete your role independently.
+6. Return ONLY valid JSON inside <JSON> tags. No other text.
 
 <JSON>
 {{
-  "room_type": "...",
-  "observation": "one concise sentence describing the room",
-  "obs_scope": "comma-separated list of visible objects and areas",
-  "can_do": ["verb + specific object + purpose"],
+  "room_type": "kitchen or bedroom or living room",
+  "observation": "one sentence: what you see in the image",
+  "obs_scope": "comma-separated visible objects only",
+  "can_do": ["verb + visible object from obs_scope"],
   "cannot_do": [{{"action": "...", "reason": "NO_OBJECT"}}],
   "conf": {{"action text": 0.9}},
-  "can_provide": ["max 2 tangible items for the other agent"],
-  "need_from_other": ["max 2 specific needs"]
+  "can_provide": [],
+  "need_from_other": []
 }}
 </JSON>"""
 
@@ -369,25 +372,36 @@ Global task: "{task}"{hq_block}
 
 {_P2_HANDOFF_RULES}
 
+STRICT VISIBILITY RULE:
+- Every action must use ONLY objects visible in YOUR room image.
+- Do NOT invent objects. Do NOT reference items from the other room.
+- If you cannot physically see it, do not include it.
+
 Think before writing:
 1. FINAL GOAL: What END STATE does this task want?
 2. MY ROLE: What is MY specific contribution from {my.room_type}?
-3. GIVE: Does the other agent need something I can physically provide? (→ PASS)
-4. RECEIVE: Do I need something from the other agent? (→ RECEIVE step)
+3. GIVE: If can_provide is NOT empty → you MUST add prep steps + PASS step.
+4. RECEIVE: If need_from_other is NOT empty → you MUST add a receive step.
 
 PLANNING RULES:
-1. Steps ONLY in {my.room_type}, using ONLY visible objects.
-2. 2–5 steps only. No filler steps.
-3. PASS — if can_provide is NOT empty:
-   - Add 1–2 prep steps first (slice, arrange, pour, etc.)
-   - Add ONE PASS step: "carry [item] to {my.room_type} doorway for [agent] pickup"
-   - CRITICAL: PASS step MUST have depends_on=[prep step ids]
-4. RECEIVE — if need_from_other is NOT empty:
-   - Add: "receive [item] from other room and place at [specific location]"
-   - Leave depends_on=[] (system links automatically)
-5. INFORM — only when other agent must know your status to proceed
-6. Return ONLY valid JSON inside <JSON> tags.
+1. Steps ONLY in {my.room_type}, using ONLY objects from obs_scope.
+2. 2–5 steps. Every step must directly serve the global task goal.
+   NO filler steps (do not add steps unrelated to the task).
+3. PASS — if can_provide is NOT empty (MANDATORY):
+   - 1–2 prep steps using visible objects
+   - ONE PASS: "carry [item] to {my.room_type} doorway for [agent] pickup"
+   - PASS MUST have depends_on=[prep step ids]
+4. RECEIVE — if need_from_other is NOT empty (MANDATORY):
+   - "receive [item] from other room and place at [specific location in your room]"
+   - depends_on=[] (system links automatically)
+5. Return ONLY valid JSON inside <JSON> tags. No other text.
 
+<JSON>
+{{
+  "plan_steps": [
+    {{"step_id":1,"time_min":1,"action":"verb + visible object",
+      "preconditions":[],"depends_on":[],"handoff_type":null,
+      "target_agent":null,"uncertainty":0.1,"notes":""}}
   ]
 }}
 </JSON>"""
@@ -633,23 +647,32 @@ def _ensure_pass(
         }
         _PLACE = {"place","put","lay","bring","serve","deliver","receive","arrange"}
 
-        # 1단계: keyword 직접 겹침
-        targets = [s for s in receiver.steps
-                   if not s.handoff_type and pkw & _kw(s.action)]
+        _RECV_VERBS = {"receive","collect","pick","get","take","accept","grab"}
 
-        # 2단계: food item + 배치 동사
+        # 1단계: receive 동사가 있는 스텝만 우선
+        targets = [s for s in receiver.steps
+                   if not s.handoff_type
+                   and set(re.findall(r"\w+", s.action.lower())) & _RECV_VERBS]
+
+        # 2단계: keyword 직접 겹침 (receive 동사 없어도)
+        if not targets:
+            targets = [s for s in receiver.steps
+                       if not s.handoff_type and pkw & _kw(s.action)]
+
+        # 3단계: food item + 배치 동사 (receive 없는 경우)
         if not targets and pkw & _FOOD_KW_LOCAL:
             targets = [s for s in receiver.steps
                        if not s.handoff_type
                        and set(re.findall(r"\w+", s.action.lower())) & _PLACE
                        and _kw(s.action) & _FOOD_KW_LOCAL]
 
-        # 3단계: need_from_other fuzzy match
+        # 4단계: need_from_other fuzzy match
         if not targets:
             targets = [s for s in receiver.steps
                        if not s.handoff_type
                        and any(_fuzzy_match_soft(s.action, n)
-                               for n in r_offer.need_from_other)]
+                               for n in r_offer.need_from_other)
+                       and set(re.findall(r"\w+", s.action.lower())) & _PLACE]
 
         # receiver step이 없으면 자동 추가
         if not targets:
@@ -762,10 +785,15 @@ EXAMPLE:
   Your correct response includes:
     "receive meal tray from kitchen and place on dresser"  ← RECEIVE (mandatory)
 
+STRICT VISIBILITY RULE:
+- Use ONLY objects visible in YOUR room image. No imagined objects.
+- Every action must directly serve the global task goal.
+
 RULES:
-1. Steps ONLY in {my.room_type}, using ONLY visible objects. 2–4 steps.
-2. PASS step MUST have depends_on=[prep_step_ids].
-3. Return ONLY valid JSON inside <JSON> tags.
+1. Steps ONLY in {my.room_type}, 2–4 steps, no filler.
+2. If incoming PASS exists → RECEIVE step is MANDATORY.
+3. If can_provide is not empty → PASS step is MANDATORY (with depends_on=[prep ids]).
+4. Return ONLY valid JSON inside <JSON> tags. No other text.
 
 <JSON>
 {{"plan_steps": [
@@ -1455,42 +1483,9 @@ def phase6_human_query(
         if ans:
             answers[q] = ans
 
-    # ── 답변을 context로 에이전트에 전달 → Phase 2a부터 전체 re-planning ──────
+    # HQ 답변은 finalize 단계에서 반영됨 (P2P 협상은 이미 완료)
     if answers:
-        _banner("PHASE 6b — FULL RE-PLANNING (with human context)")
-        hq_context = "\n".join(
-            f"Human clarification Q{i+1}: {q}\nAnswer: {a}"
-            for i, (q, a) in enumerate(answers.items())
-        )
-        print(f"  Human context:\n    {hq_context[:200]}")
-
-        # Phase 2a: HQ context 포함해서 draft 재생성
-        _banner("PHASE 6b-2a — RE-DRAFT PLANNING")
-        p2a_a = _build_phase2_prompt(offer_a, offer_b, task, True, hq_context=hq_context)
-        p2a_b = _build_phase2_prompt(offer_b, offer_a, task, True, hq_context=hq_context)
-        res_2a = _run_parallel([(img_a, p2a_a, True), (img_b, p2a_b, True)])
-        redraft_a = _parse_local_plan(res_2a[0][0], res_2a[0][1], offer_a, step_offset=0)
-        redraft_b = _parse_local_plan(res_2a[1][0], res_2a[1][1], offer_b, step_offset=AGENT_B_STEP_OFFSET)
-        print(f"  A re-draft: {len(redraft_a.steps)} steps | B re-draft: {len(redraft_b.steps)} steps")
-
-        # Phase 2b: 상대방 re-draft 보고 최종 re-plan
-        _banner("PHASE 6b-2b — RE-FINAL PLANNING")
-        p2b_a = _build_phase2b_prompt(offer_a, offer_b, redraft_b, task, hq_context=hq_context)
-        p2b_b = _build_phase2b_prompt(offer_b, offer_a, redraft_a, task, hq_context=hq_context)
-        res_2b = _run_parallel([(img_a, p2b_a, True), (img_b, p2b_b, True)])
-        new_a = _parse_local_plan(res_2b[0][0], res_2b[0][1], offer_a, step_offset=0)
-        new_b = _parse_local_plan(res_2b[1][0], res_2b[1][1], offer_b, step_offset=AGENT_B_STEP_OFFSET)
-
-        # Phase 2c: rule-based PASS 보완
-        _banner("PHASE 6b-2c — RE-HANDOFF COORDINATION")
-        new_a, new_b = _ensure_pass(new_a, new_b, offer_a, offer_b)
-
-        # in-place 업데이트
-        plan_a.steps[:] = new_a.steps
-        plan_a.handoffs[:] = new_a.handoffs
-        plan_b.steps[:] = new_b.steps
-        plan_b.handoffs[:] = new_b.handoffs
-        print(f"  Re-planning complete: A={len(plan_a.steps)} steps, B={len(plan_b.steps)} steps")
+        print(f"  Human answers received: {len(answers)} → will be reflected at finalization.")
 
     return answers, triggered, asked
 
@@ -1513,10 +1508,31 @@ def phase_finalize(
             print(f"    Q: {q[:65]}...")
             print(f"    A: {a}")
 
-    # HQ 답변은 phase6에서 에이전트 mini re-planning으로 이미 반영됨
-    # 코드가 플랜을 직접 수정하지 않음 (non-centralized 원칙)
-    if human_answers and verbose in ("full", "summary"):
-        print("  Human answers already reflected via agent re-planning in Phase 6b.")
+    # HQ 답변을 joint plan에 반영 — VLM으로 필요한 스텝 추가
+    if human_answers:
+        hq_ctx = "\n".join(f"Q: {q}\nA: {a}" for q, a in human_answers.items())
+        # "A should do X" 형태 답변에서 agent_A 스텝 추가
+        a_lower_all = " ".join(human_answers.values()).lower()
+        _A_KW = {"agent a", "kitchen", "a should", "kitchen agent", "agent_a"}
+        _B_KW = {"agent b", "bedroom", "b should", "bedroom agent", "agent_b"}
+        for food_kw in ["meal", "food", "snack", "drink", "coffee", "breakfast", "lunch"]:
+            if food_kw in a_lower_all:
+                # A가 음식을 준비해야 하는 경우
+                if any(kw in a_lower_all for kw in _A_KW):
+                    already = any(food_kw in s.get("action","").lower() for s in steps_a)
+                    if not already:
+                        new_sid = max((s["step_id"] for s in steps_a + steps_b), default=0) + 1
+                        steps_a.append({
+                            "step_id": new_sid, "time_min": 1,
+                            "room": steps_a[0].get("room","kitchen") if steps_a else "kitchen",
+                            "agent_id": "agent_A",
+                            "action": f"prepare {food_kw} using visible kitchen items",
+                            "preconditions": [], "depends_on": [],
+                            "handoff_type": None, "target_agent": None,
+                            "uncertainty": 0.2, "notes": "added per human clarification",
+                        })
+                        print(f"  [FINALIZE] Added A step: 'prepare {food_kw}' per HQ")
+                break
 
     merged = list(steps_a) + list(steps_b)
     merged.sort(key=lambda s: (s.get("time_min", 0), s.get("step_id", 0)))
