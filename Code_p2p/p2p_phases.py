@@ -95,198 +95,201 @@ def _is_passable(item: str) -> bool:
 # PHASE 1: OBSERVATION & OFFER GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-_P1_EXAMPLE = """
-EXAMPLE 1 — kitchen agent, task "prepare for sick person staying home":
+_OBS_DRAFT_EXAMPLE = """
+EXAMPLE — kitchen agent, task "prepare for sick person staying home":
 <JSON>
 {
-  "room_type": "kitchen",
-  "observation": "Kitchen with fruits on island, bread basket, coffee maker, kettle.",
-  "obs_scope": "island, counter, sink, stove, fruits, bread basket, coffee maker, kettle, mugs",
-  "can_do": [
-    "slice fruit from island and place on plate",
-    "arrange bread from basket onto plate",
-    "pour hot water from kettle into mug",
-    "place mug and plate on serving tray",
-    "wipe counter surface with cloth"
-  ],
-  "cannot_do": [
-    {"action": "adjust bedroom lighting", "reason": "NO_OBJECT"},
-    {"action": "prepare bed", "reason": "NO_OBJECT"}
-  ],
-  "conf": {
-    "slice fruit from island and place on plate": 0.9,
-    "arrange bread from basket onto plate": 0.85,
-    "pour hot water from kettle into mug": 0.9,
-    "place mug and plate on serving tray": 0.9,
-    "wipe counter surface with cloth": 0.95
+  "offer": {
+    "room_type": "kitchen",
+    "observation": "Kitchen with fruits on island, bread basket, coffee maker, kettle.",
+    "obs_scope": "island, counter, sink, stove, fruits, bread basket, coffee maker, kettle, mugs",
+    "can_do": [
+      "slice fruit from island and place on plate",
+      "arrange bread from basket onto plate",
+      "pour hot water from kettle into mug",
+      "place mug and plate on serving tray"
+    ],
+    "cannot_do": [
+      {"action": "adjust bedroom lighting", "reason": "NO_OBJECT"}
+    ],
+    "conf": {
+      "slice fruit from island and place on plate": 0.9,
+      "arrange bread from basket onto plate": 0.85,
+      "pour hot water from kettle into mug": 0.9,
+      "place mug and plate on serving tray": 0.9
+    },
+    "can_provide": ["light meal tray with fruit, bread, and warm drink"],
+    "need_from_other": []
   },
-  "can_provide": ["light meal tray with fruit, bread, and warm drink"],
-  "need_from_other": []
+  "draft_plan": {
+    "plan_steps": [
+      {"step_id":1,"time_min":1,"action":"slice fruit from island and place on plate",
+       "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+      {"step_id":2,"time_min":2,"action":"arrange bread from basket onto tray",
+       "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+      {"step_id":3,"time_min":3,"action":"pour hot water from kettle into mug and place on tray",
+       "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+      {"step_id":4,"time_min":4,"action":"carry meal tray to kitchen doorway for agent_B pickup",
+       "preconditions":["tray ready"],"depends_on":[1,2,3],
+       "handoff_type":"PASS","target_agent":"agent_B","uncertainty":0.15,"notes":"meal tray at doorway"}
+    ]
+  }
 }
 </JSON>
 
-EXAMPLE 2 — bedroom agent, same task:
+EXAMPLE — bedroom agent, same task:
 <JSON>
 {
-  "room_type": "bedroom",
-  "observation": "Bedroom with bed, pillow, blanket, lamp, dresser, alarm clock.",
-  "obs_scope": "bed, pillow, blanket, lamp, dresser, alarm clock, window, curtain",
-  "can_do": [
-    "fluff pillow and arrange on bed",
-    "fold blanket for easy access",
-    "dim lamp for restful lighting",
-    "clear dresser surface for tray placement",
-    "set alarm clock for medication reminder"
-  ],
-  "cannot_do": [
-    {"action": "prepare food or drinks", "reason": "NO_OBJECT"},
-    {"action": "use kitchen appliances", "reason": "NO_OBJECT"}
-  ],
-  "conf": {
-    "fluff pillow and arrange on bed": 0.95,
-    "fold blanket for easy access": 0.95,
-    "dim lamp for restful lighting": 0.9,
-    "clear dresser surface for tray placement": 0.9,
-    "set alarm clock for medication reminder": 0.85
+  "offer": {
+    "room_type": "bedroom",
+    "observation": "Bedroom with bed, pillow, blanket, lamp, dresser, alarm clock.",
+    "obs_scope": "bed, pillow, blanket, lamp, dresser, alarm clock, window, curtain",
+    "can_do": [
+      "fluff pillow and arrange on bed",
+      "fold blanket for easy access",
+      "dim lamp for restful lighting",
+      "clear dresser surface for tray placement"
+    ],
+    "cannot_do": [
+      {"action": "prepare food or drinks", "reason": "NO_OBJECT"}
+    ],
+    "conf": {
+      "fluff pillow and arrange on bed": 0.95,
+      "fold blanket for easy access": 0.95,
+      "dim lamp for restful lighting": 0.9,
+      "clear dresser surface for tray placement": 0.9
+    },
+    "can_provide": [],
+    "need_from_other": ["light meal tray with food and warm drink from kitchen"]
   },
-  "can_provide": [],
-  "need_from_other": ["light meal tray with food and warm drink from kitchen"]
+  "draft_plan": {
+    "plan_steps": [
+      {"step_id":101,"time_min":1,"action":"fluff pillow and arrange on bed",
+       "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+      {"step_id":102,"time_min":2,"action":"clear dresser surface for tray placement",
+       "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+      {"step_id":103,"time_min":3,"action":"dim lamp for restful lighting",
+       "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""},
+      {"step_id":104,"time_min":5,"action":"receive meal tray from kitchen and place on dresser",
+       "preconditions":[],"depends_on":[],"handoff_type":null,"target_agent":null,"uncertainty":0.15,"notes":"wait for kitchen agent"}
+    ]
+  }
 }
 </JSON>
 """.strip()
 
 
-def _build_phase1_prompt(task: str) -> str:
-    return f"""You are a home agent. Look at the room image carefully and generate a structured observation.
+def _build_obs_draft_prompt(task: str, step_offset: int = 0) -> str:
+    """OBSERVATION 단계: offer + draft plan을 한 번에 생성."""
+    offset_note = f"Use step_id starting from {step_offset+1}." if step_offset else "Use step_id starting from 1."
+    return f"""You are a home agent. Look at the room image carefully.
 
-Task context: "{task}"
+Task: "{task}"
 
-{_P1_EXAMPLE}
+{_OBS_DRAFT_EXAMPLE}
+
+{_P2_HANDOFF_RULES}
 
 STRICT VISIBILITY RULE:
-- You may ONLY reference objects that are LITERALLY VISIBLE in the image.
-- If you cannot see it in the image, do NOT include it in can_do or obs_scope.
-- Every action in can_do must involve a specific object you can see.
-- Do NOT imagine or infer objects that are not visible.
+- List ONLY objects you can literally see in the image in obs_scope.
+- Every can_do action must use a specific visible object from obs_scope.
+- Use all available visible objects actively — do not ignore useful items.
+- Do NOT imagine or infer objects not visible.
 
-RULES:
-1. obs_scope: list every object you can actually see (comma-separated nouns only).
-2. can_do: max {MAX_CAN_DO} actions. Each action must:
-   - Use ONLY objects listed in obs_scope.
-   - Start with a verb: "slice", "arrange", "carry", "clear", "dim", "brew", etc.
-   - Directly contribute to the global task goal.
-3. cannot_do: actions relevant to the task but NOT possible in your room.
-   reason: NO_OBJECT | NO_CAPABILITY | UNCERTAIN
-4. can_provide: a SINGLE item you can physically carry to another room that the other agent needs.
-   - Only include if the other agent CANNOT complete their role without it.
-   - Must be physically portable (tray, drink, document). Write [] if unsure.
-5. need_from_other: specific item you need delivered from the other room.
-   Write [] if you can complete your role independently.
-6. Return ONLY valid JSON inside <JSON> tags. No other text.
+Generate BOTH your offer AND your draft plan in one response.
+
+OFFER RULES:
+1. obs_scope: every object you can actually see (comma-separated).
+2. can_do: up to {MAX_CAN_DO} actions — use visible objects actively for the task.
+3. can_provide: ONE item the other agent genuinely needs from you ([] if none).
+4. need_from_other: ONE item you need delivered ([] if independent).
+
+DRAFT PLAN RULES:
+1. 2–5 steps using ONLY objects in obs_scope.
+2. Every step must directly serve the global task goal. No filler steps.
+3. If can_provide is NOT empty → add prep steps + PASS step (mandatory).
+4. If need_from_other is NOT empty → add receive step (mandatory).
+5. {offset_note}
+
+Return ONLY valid JSON inside <JSON> tags.
 
 <JSON>
 {{
-  "room_type": "kitchen or bedroom or living room",
-  "observation": "one sentence: what you see in the image",
-  "obs_scope": "comma-separated visible objects only",
-  "can_do": ["verb + visible object from obs_scope"],
-  "cannot_do": [{{"action": "...", "reason": "NO_OBJECT"}}],
-  "conf": {{"action text": 0.9}},
-  "can_provide": [],
-  "need_from_other": []
+  "offer": {{
+    "room_type": "kitchen or bedroom or living room",
+    "observation": "one sentence describing the room",
+    "obs_scope": "comma-separated visible objects",
+    "can_do": ["verb + visible object"],
+    "cannot_do": [{{"action": "...", "reason": "NO_OBJECT"}}],
+    "conf": {{"action": 0.9}},
+    "can_provide": [],
+    "need_from_other": []
+  }},
+  "draft_plan": {{
+    "plan_steps": [
+      {{"step_id":1,"time_min":1,"action":"verb + visible object",
+        "preconditions":[],"depends_on":[],"handoff_type":null,
+        "target_agent":null,"uncertainty":0.1,"notes":""}}
+    ]
+  }}
 }}
 </JSON>"""
 
 
-def _parse_offer(raw: str, agent_id: str) -> Offer:
+def _parse_obs_draft(raw: str, agent_id: str, step_offset: int = 0) -> tuple:
+    """통합 obs+draft JSON 파싱 → (Offer, LocalPlan) 반환."""
     data = extract_json(raw)
-    if isinstance(data, list):
-        data = data[0] if data else {}
     if not isinstance(data, dict):
         data = {}
 
-    cannot_do: List[CannotEntry] = []
-    uncertain_count = 0
-    for item in data.get("cannot_do", [])[:MAX_CANNOT_DO]:
-        if not isinstance(item, dict):
-            continue
-        action = str(item.get("action", "")).strip()
-        reason = _norm_reason(item.get("reason", "UNCERTAIN"))
-        if action:
-            if reason == "UNCERTAIN":
-                uncertain_count += 1
-            cannot_do.append(CannotEntry(action, reason))
+    offer_data = data.get("offer", {})
+    draft_data = data.get("draft_plan", {})
 
-    cannot_set = {c.action.lower() for c in cannot_do}
-    seen: Set[str] = set()
-    can_do: List[str] = []
-    for x in data.get("can_do", []):
-        a = str(x).strip()
-        if not a or a.lower() in seen:
-            continue
-        if any(_fuzzy_match(a, c, min_overlap=2) for c in cannot_set):
-            continue
-        seen.add(a.lower())
-        can_do.append(a)
-        if len(can_do) >= MAX_CAN_DO:
-            break
+    # offer 파싱
+    offer_raw = json.dumps(offer_data) if offer_data else "{}"
+    offer = _parse_offer(offer_raw, agent_id)
 
-    raw_scope = data.get("obs_scope", "")
-    obs_scope = (
-        ", ".join(str(x).strip() for x in raw_scope)
-        if isinstance(raw_scope, list)
-        else str(raw_scope).strip()
-    )
-
-    conf_raw = {str(k): clamp01(v) for k, v in data.get("conf", {}).items()}
-
-    # can_provide: 물리적으로 전달 가능한 아이템만 허용
-    raw_provides = [str(x).strip() for x in data.get("can_provide", []) if str(x).strip()]
-    can_provide  = [p for p in raw_provides if _is_passable(p)]
-    filtered     = [p for p in raw_provides if not _is_passable(p)]
-    if filtered:
-        print(f"  [OFFER] non-passable items filtered from can_provide: {filtered}")
-
-    return Offer(
-        agent_id        = agent_id,
-        room_type       = str(data.get("room_type", "")).strip(),
-        observation     = str(data.get("observation", "")).strip(),
-        obs_scope       = obs_scope,
-        can_do          = can_do,
-        cannot_do       = cannot_do,
-        conf            = _match_conf(conf_raw, can_do),
-        can_provide     = can_provide,
-        need_from_other = [str(x).strip() for x in data.get("need_from_other", [])
-                           if str(x).strip()],
-        uncertain_count = uncertain_count,
-    )
+    # draft plan 파싱
+    if draft_data:
+        plan_raw = json.dumps(draft_data)
+    else:
+        plan_raw = "{}"
+    plan = _parse_local_plan(plan_raw, [], offer, step_offset=step_offset)
+    return offer, plan
 
 
-def phase1_offer(
-    img_a: str, img_b: str, task: str, verbose: str = "full",
-) -> Tuple[Offer, Offer]:
-    _banner("PHASE 1 — OBSERVATION & OFFER GENERATION")
-    prompt  = _build_phase1_prompt(task)
-    results = _run_parallel([(img_a, prompt, False), (img_b, prompt, False)])
+def observe_and_draft(
+    img_a: str, img_b: str, task: str,
+    verbose: str = "full",
+) -> tuple:
+    """OBSERVATION: offer + draft plan을 한 번에 생성 (VLM × 2)."""
+    _banner("OBSERVATION — offer + draft plan")
+    prompt_a = _build_obs_draft_prompt(task, step_offset=0)
+    prompt_b = _build_obs_draft_prompt(task, step_offset=AGENT_B_STEP_OFFSET)
+
+    results  = _run_parallel([(img_a, prompt_a, False), (img_b, prompt_b, False)])
     raw_a, _ = results[0]
     raw_b, _ = results[1]
 
     if verbose == "full":
-        _log("A RAW OFFER", raw_a)
-        _log("B RAW OFFER", raw_b)
+        _log("A RAW", raw_a)
+        _log("B RAW", raw_b)
 
-    offer_a = _parse_offer(raw_a, "agent_A")
-    offer_b = _parse_offer(raw_b, "agent_B")
+    offer_a, draft_a = _parse_obs_draft(raw_a, "agent_A", step_offset=0)
+    offer_b, draft_b = _parse_obs_draft(raw_b, "agent_B", step_offset=AGENT_B_STEP_OFFSET)
 
     if verbose in ("full", "summary"):
         _log("OFFER A", jdump(offer_to_dict(offer_a)))
         _log("OFFER B", jdump(offer_to_dict(offer_b)))
 
-    print(f"\n  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)} "
-          f"| provide={len(offer_a.can_provide)} | need={len(offer_a.need_from_other)}")
+    print(f"  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)} "
+          f"| provide={len(offer_a.can_provide)} | draft={len(draft_a.steps)} steps")
     print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)} "
-          f"| provide={len(offer_b.can_provide)} | need={len(offer_b.need_from_other)}")
-    return offer_a, offer_b
+          f"| provide={len(offer_b.can_provide)} | draft={len(draft_b.steps)} steps")
+    return offer_a, offer_b, draft_a, draft_b
+
+
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -804,28 +807,17 @@ RULES:
 </JSON>"""
 
 
-def phase2_local_plan(
+# phase2_local_plan kept as alias for backward compat
+def coordinate(
     offer_a: Offer, offer_b: Offer,
+    draft_a: LocalPlan, draft_b: LocalPlan,
     img_a: str, img_b: str, task: str,
     use_offer: bool = True,
     verbose: str = "full",
 ) -> Tuple[LocalPlan, LocalPlan]:
+    """COORDINATION: 상대방 draft를 보고 final plan 생성 (VLM × 2)."""
 
-    # Phase 2a: 각자 독립 draft
-    _banner("PHASE 2a — DRAFT PLANNING")
-    pa = _build_phase2_prompt(offer_a, offer_b, task, use_offer)
-    pb = _build_phase2_prompt(offer_b, offer_a, task, use_offer)
-    res_a = _run_parallel([(img_a, pa, True), (img_b, pb, True)])
-    raw_a, lp_a = res_a[0]
-    raw_b, lp_b = res_a[1]
-    draft_a = _parse_local_plan(raw_a, lp_a, offer_a, step_offset=0)
-    draft_b = _parse_local_plan(raw_b, lp_b, offer_b, step_offset=AGENT_B_STEP_OFFSET)
-    if verbose == "full":
-        _log("A DRAFT", raw_a); _log("B DRAFT", raw_b)
-    print(f"  A draft: {len(draft_a.steps)} steps | B draft: {len(draft_b.steps)} steps")
-
-    # Phase 2b: 상대방 draft 보고 최종 plan
-    _banner("PHASE 2b — FINAL PLANNING (mutual awareness)")
+    _banner("COORDINATION — mutual awareness final plan")
     pa2 = _build_phase2b_prompt(offer_a, offer_b, draft_b, task)
     pb2 = _build_phase2b_prompt(offer_b, offer_a, draft_a, task)
     res_b = _run_parallel([(img_a, pa2, True), (img_b, pb2, True)])
@@ -836,9 +828,9 @@ def phase2_local_plan(
     plan_a = _parse_local_plan(raw_a2, lp_a2, offer_a, step_offset=0)
     plan_b = _parse_local_plan(raw_b2, lp_b2, offer_b, step_offset=AGENT_B_STEP_OFFSET)
 
-    # Phase 2c: rule-based PASS 보완
+    # HANDOFF SYNC: rule-based PASS 보완
     if use_offer:
-        _banner("PHASE 2c — HANDOFF COORDINATION (rule-based)")
+        _banner("HANDOFF SYNC — rule-based coordination")
         plan_a, plan_b = _ensure_pass(plan_a, plan_b, offer_a, offer_b)
 
     if verbose in ("full", "summary"):
@@ -852,6 +844,23 @@ def phase2_local_plan(
     for h in plan_a.handoffs + plan_b.handoffs:
         print(f"  [{h.agent_id}->{h.handoff_type}] step{h.step_id} → {h.target_agent} | {h.action[:55]}")
     return plan_a, plan_b
+
+
+def phase2_local_plan(
+    offer_a: Offer, offer_b: Offer,
+    img_a: str, img_b: str, task: str,
+    use_offer: bool = True,
+    verbose: str = "full",
+    draft_a: LocalPlan = None,
+    draft_b: LocalPlan = None,
+) -> Tuple[LocalPlan, LocalPlan]:
+    """Backward compat wrapper."""
+    if draft_a is None or draft_b is None:
+        # draft 없으면 빈 플랜 생성 (호환성)
+        from p2p_models import LocalPlan as LP
+        draft_a = draft_a or LP("agent_A", [], 0.2, [], [])
+        draft_b = draft_b or LP("agent_B", [], 0.2, [], [])
+    return coordinate(offer_a, offer_b, draft_a, draft_b, img_a, img_b, task, use_offer, verbose)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1028,7 +1037,7 @@ def phase3_conflict_detection(
     offer_a: Offer, offer_b: Offer,
     verbose: str = "full",
 ) -> List[ConflictEntry]:
-    _banner("PHASE 3 — CONFLICT DETECTION")
+    _banner("CONFLICT CHECK")
     conflicts = detect_conflicts(plan_a, plan_b, offer_a, offer_b)
 
     if not conflicts:
@@ -1179,7 +1188,7 @@ def phase4_negotiation(
     img_a: str, img_b: str, task: str,
     verbose: str = "full",
 ) -> Tuple[List[Dict], List[Dict], List[NegotiationRound]]:
-    _banner("PHASE 4 — P2P NEGOTIATION")
+    _banner("NEGOTIATION — P2P")
 
     if not conflicts:
         print("  No conflicts → skip.")
@@ -1281,7 +1290,7 @@ def phase5_convergence_check(
     offer_a: Offer, offer_b: Offer,
     conflicts: List[ConflictEntry],
 ) -> ConvergenceResult:
-    _banner("PHASE 5 — CONVERGENCE CHECK")
+    _banner("PLAN QUALITY CHECK")
     all_steps = steps_a + steps_b
 
     no_cycle = not _has_cycle(all_steps)
@@ -1417,7 +1426,7 @@ def phase6_human_query(
     답변은 에이전트에게 context로 전달 → mini re-planning.
     코드가 플랜을 직접 수정하지 않음.
     """
-    _banner("PHASE 6 — DEFERRED HUMAN QUERY")
+    _banner("HUMAN QUERY")
 
     if not use_human_query:
         print("  [ABLATION] disabled.")
@@ -1430,13 +1439,33 @@ def phase6_human_query(
     _SOLVABLE_KW = {"light","lamp","curtain","window","pillow","blanket",
                     "laptop","desk","table","chair","counter","shelf"}
 
-    # HQ 발동: need_from_other 중 아무도 제공 못 하는 것만
+    # HQ 발동: 에이전트가 이미지로 절대 알 수 없는 외부 정보만
+    # (물리적 객체 UNMATCHED는 에이전트가 스스로 해결 → HQ 불필요)
+    _PREFERENCE_KW = {
+        "prefer","want","like","need","allergy","allergic",
+        "medicine","medication","condition","which","what kind",
+        "temperature","hot","cold","specific","special","dietary",
+        "요구","선호","알레르기","약","조건","어떤","특별"
+    }
+    _PHYSICAL_KW = {
+        "tray","plate","bowl","cup","mug","basket","bottle","bag",
+        "cloth","towel","blanket","pillow","lamp","laptop","book",
+        "tool","device","equipment","room","doorway","counter","shelf"
+    }
+
     hq_candidates = []
     all_provides = offer_a.can_provide + offer_b.can_provide
     for need in offer_a.need_from_other + offer_b.need_from_other:
         if _kw(need) & _INFO_KW:
             continue
+        # 물리적 객체 UNMATCHED → 에이전트가 스스로 해결 가능 → HQ 불필요
+        if _kw(need) & _PHYSICAL_KW:
+            continue
         if any(kw in need.lower() for kw in _SOLVABLE_KW):
+            continue
+        # preference/condition 키워드 있을 때만 HQ
+        need_kw = set(need.lower().split())
+        if not (need_kw & _PREFERENCE_KW):
             continue
         if not any(_fuzzy_match_soft(need, p) for p in all_provides):
             class _FakeConflict:
@@ -1483,9 +1512,64 @@ def phase6_human_query(
         if ans:
             answers[q] = ans
 
-    # HQ 답변은 finalize 단계에서 반영됨 (P2P 협상은 이미 완료)
+    # HQ 답변 반영: VLM으로 각 에이전트 플랜 polish (2회 호출)
     if answers:
-        print(f"  Human answers received: {len(answers)} → will be reflected at finalization.")
+        _banner("HUMAN QUERY — PLAN POLISH")
+        hq_ctx = "\n".join(f"Q: {q}\nA: {a}" for q, a in answers.items())
+        print(f"  Polishing plans with human context...")
+
+        def _polish(plan: LocalPlan, offer: Offer, img: str) -> LocalPlan:
+            steps_summary = "\n".join(
+                f"  {i+1}. {s.action}"
+                + (f" [PASS→{s.target_agent}]" if s.handoff_type == "PASS" else "")
+                for i, s in enumerate(plan.steps)
+            )
+            prompt = f"""You are {offer.agent_id} ({offer.room_type}).
+Task: "{task}"
+
+Human clarification:
+{hq_ctx}
+
+Your current plan:
+{steps_summary}
+
+Update your plan to incorporate the human's answer.
+- Modify or add steps based on the human's clarification.
+- Keep steps that are already correct.
+- Use ONLY objects visible in your room image.
+- 2–5 steps, no filler.
+- Return ONLY valid JSON inside <JSON> tags.
+
+<JSON>
+{{"plan_steps": [
+  {{"step_id":1,"time_min":1,"action":"...","preconditions":[],"depends_on":[],
+    "handoff_type":null,"target_agent":null,"uncertainty":0.1,"notes":""}}
+]}}
+</JSON>"""
+            try:
+                raw, logp = run_vlm(img, prompt)
+                polished = _parse_local_plan(
+                    raw, logp, offer,
+                    step_offset=plan.steps[0].step_id - 1 if plan.steps else 0
+                )
+                if polished.steps:
+                    print(f"  [{offer.agent_id}] polished: {len(polished.steps)} steps")
+                    return polished
+            except Exception as e:
+                print(f"  [{offer.agent_id}] polish failed: {e}")
+            return plan
+
+        with __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor(2) as ex:
+            fa = ex.submit(_polish, plan_a, offer_a, img_a)
+            fb = ex.submit(_polish, plan_b, offer_b, img_b)
+            pa_new = fa.result()
+            pb_new = fb.result()
+
+        plan_a.steps[:] = pa_new.steps
+        plan_a.handoffs[:] = pa_new.handoffs
+        plan_b.steps[:] = pb_new.steps
+        plan_b.handoffs[:] = pb_new.handoffs
+        print("  Polish complete.")
 
     return answers, triggered, asked
 
@@ -1500,7 +1584,7 @@ def phase_finalize(
     human_answers: Dict[str, str],
     verbose: str = "full",
 ) -> List[Dict]:
-    _banner("FINALIZE — RULE-BASED MERGE")
+    _banner("MERGE — final joint plan")
 
     if human_answers and verbose in ("full", "summary"):
         print("  Human answers:")
@@ -1562,6 +1646,9 @@ def phase_finalize(
 # ══════════════════════════════════════════════════════════════════════════════
 # OUTPUT FORMAT (자연어, 깔끔한 출력)
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+merge_plans = phase_finalize  # alias
 
 def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     if not plan:
@@ -1684,3 +1771,8 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
 
     lines.append(SEP)
     return "\n".join(lines)
+
+# ── 함수 alias (하위 호환 + 새 이름) ──────────────────────────────────────
+run_negotiation       = phase4_negotiation
+check_plan_quality    = phase5_convergence_check
+run_human_query       = phase6_human_query
