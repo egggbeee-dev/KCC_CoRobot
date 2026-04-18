@@ -831,35 +831,44 @@ YOUR need_from_other: {json.dumps(my.need_from_other, ensure_ascii=False)}
 {other.agent_id} ({other.room_type}) DRAFT PLAN:
 {chr(10).join(other_summary) if other_summary else "  (no steps yet)"}
 
-Generate YOUR FINAL plan.
+STEP 1 — Understand YOUR role in this task:
+  Global task: "{task}"
+  Your room: {my.room_type}
+  Ask yourself: "What does THIS ROOM need to do to achieve the task goal?"
+  → List 2–3 actions your room must perform (independent of the other agent).
 
-CHECK 1 — Incoming PASS:
-  Does {other.agent_id}'s draft have a "[→ PASS to {my.agent_id}]" step?
-  If YES → you MUST add a RECEIVE step:
-    action: "receive [item] from {other.room_type} and place at [specific location]"
+STEP 2 — Handle incoming PASS:
+  Does {other.agent_id}'s draft have "[→ PASS to {my.agent_id}]"?
+  If YES → add a RECEIVE step AFTER your room-preparation steps:
+    action: "receive [specific item] from {other.room_type} and place at [location]"
     depends_on: [] (system links automatically)
 
-CHECK 2 — Outgoing PASS:
+STEP 3 — Handle outgoing PASS:
   Is YOUR can_provide non-empty?
-  If YES → add prep steps, then PASS step with depends_on=[prep_step_ids]
+  If YES → add prep steps + PASS step with depends_on=[prep step ids]
 
-CHECK 3 — No duplicates:
-  Skip actions already covered by {other.agent_id}'s draft.
-
-EXAMPLE:
-  Other draft has: "carry meal tray to kitchen doorway for agent_B pickup [→ PASS to agent_B]"
-  Your correct response includes:
-    "receive meal tray from kitchen and place on dresser"  ← RECEIVE (mandatory)
+STEP 4 — Remove duplicates:
+  Skip any action already in {other.agent_id}'s draft.
 
 STRICT VISIBILITY RULE:
-- Use ONLY objects visible in YOUR room image. No imagined objects.
-- Every action must directly serve the global task goal.
+- Use ONLY objects you can literally see in your room image.
+- Every action must match the task goal for YOUR room.
 
 RULES:
-1. Steps ONLY in {my.room_type}, 2–4 steps, no filler.
-2. If incoming PASS exists → RECEIVE step is MANDATORY.
-3. If can_provide is not empty → PASS step is MANDATORY (with depends_on=[prep ids]).
-4. Return ONLY valid JSON inside <JSON> tags. No other text.
+1. Steps ONLY in {my.room_type}, 3–5 steps total.
+2. ROOM PREPARATION steps come FIRST (what your room must do for the task).
+3. RECEIVE step comes AFTER room preparation (if incoming PASS exists).
+4. PASS step is MANDATORY if can_provide is not empty.
+5. Return ONLY valid JSON inside <JSON> tags. No other text.
+
+WRONG — bedroom only has receive step:
+  Step 1: receive meal tray  ← too few, room not prepared
+
+CORRECT — bedroom prepares AND receives:
+  Step 1: fluff pillows and arrange bed for comfort
+  Step 2: dim lamp for restful lighting
+  Step 3: clear dresser surface for tray placement
+  Step 4: receive meal tray from kitchen and place on dresser  ← RECEIVE last
 
 <JSON>
 {{"plan_steps": [
@@ -1481,13 +1490,13 @@ def phase6_human_query(
     img_a: str, img_b: str,
     task: str = "",
     use_human_query: bool = True,
+    unresolved_conflicts: List = None,
 ) -> Tuple[Dict[str, str], List[str], List[str]]:
     """
-    HQ는 두 에이전트가 이미지만으로 절대 알 수 없는 정보에 대해서만 발동.
-    REDUNDANCY, OBSERVABILITY, DEPENDENCY는 협상/rule로 해결.
-    UNMATCHED 중 실제로 외부 정보가 필요한 것만 human에게 질문.
-    답변은 에이전트에게 context로 전달 → mini re-planning.
-    코드가 플랜을 직접 수정하지 않음.
+    HQ 발동 조건 (둘 중 하나):
+    1. 협상 후에도 해결 안 된 DEPENDENCY conflict가 남아있음
+    2. 두 에이전트 모두 제공 못 하는 need가 있고,
+       두 방의 이미지 어디에도 관련 객체가 없음 (진짜 외부 도움 필요)
     """
     _banner("HUMAN QUERY")
 
@@ -1495,52 +1504,47 @@ def phase6_human_query(
         print("  [ABLATION] disabled.")
         return {}, [], []
 
-    # ── HQ 발동 조건: UNMATCHED 중 이미지로 알 수 없는 것만 ──────────────────
+    unresolved_conflicts = unresolved_conflicts or []
+    hq_candidates = []
+
+    # ── 조건 1: 협상 후에도 남은 DEPENDENCY conflict ──────────────────────────
+    for c_entry in unresolved_conflicts:
+        ct = str(c_entry.conflict_type) if hasattr(c_entry, "conflict_type") else ""
+        if "DEPENDENCY" in ct or "DEP_CYCLE" in ct:
+            hq_candidates.append(c_entry)
+
+    # ── 조건 2: 두 에이전트 모두 제공 못 하는 need ───────────────────────────
+    # 단, 두 방 이미지(obs_scope + can_do)에서도 찾을 수 없는 경우만
     _INFO_KW = {"confirmation","confirm","ready","status","notify",
                 "check","verified","done","complete","whether"}
-    # 이미지로 판단 가능한 것들 — HQ 불필요
-    _SOLVABLE_KW = {"light","lamp","curtain","window","pillow","blanket",
-                    "laptop","desk","table","chair","counter","shelf"}
+    all_provides   = offer_a.can_provide + offer_b.can_provide
+    all_can_do_kw  = set()
+    for cd in offer_a.can_do + offer_b.can_do:
+        all_can_do_kw |= _kw(cd)
+    obs_kw = _kw(offer_a.obs_scope) | _kw(offer_b.obs_scope)
+    all_visible = all_can_do_kw | obs_kw
 
-    # HQ 발동: 에이전트가 이미지로 절대 알 수 없는 외부 정보만
-    # (물리적 객체 UNMATCHED는 에이전트가 스스로 해결 → HQ 불필요)
-    _PREFERENCE_KW = {
-        "prefer","want","like","need","allergy","allergic",
-        "medicine","medication","condition","which","what kind",
-        "temperature","hot","cold","specific","special","dietary",
-        "요구","선호","알레르기","약","조건","어떤","특별"
-    }
-    _PHYSICAL_KW = {
-        "tray","plate","bowl","cup","mug","basket","bottle","bag",
-        "cloth","towel","blanket","pillow","lamp","laptop","book",
-        "tool","device","equipment","room","doorway","counter","shelf"
-    }
-
-    hq_candidates = []
-    all_provides = offer_a.can_provide + offer_b.can_provide
     for need in offer_a.need_from_other + offer_b.need_from_other:
         if _kw(need) & _INFO_KW:
             continue
-        # 물리적 객체 UNMATCHED → 에이전트가 스스로 해결 가능 → HQ 불필요
-        if _kw(need) & _PHYSICAL_KW:
+        need_kw = _kw(need)
+        # 두 에이전트 모두 provide 못 함
+        if any(_fuzzy_match_soft(need, p) for p in all_provides):
             continue
-        if any(kw in need.lower() for kw in _SOLVABLE_KW):
+        # 두 방 이미지 어디에도 관련 객체 없음
+        if need_kw & all_visible:
             continue
-        # preference/condition 키워드 있을 때만 HQ
-        need_kw = set(need.lower().split())
-        if not (need_kw & _PREFERENCE_KW):
-            continue
-        if not any(_fuzzy_match_soft(need, p) for p in all_provides):
-            class _FakeConflict:
-                conflict_type = "UNMATCHED"
-                description   = f"Neither agent can provide: '{need}'"
-                step_ids      = []
-                agent_ids     = []
-                fix_hint      = "Ask human for clarification."
-            hq_candidates.append(_FakeConflict())
+        # 진짜 외부 도움이 필요한 상황
+        class _FakeConflict:
+            conflict_type = "UNMATCHED"
+            description   = f"Neither agent can provide '{need}' and it is not visible in either room."
+            step_ids      = []
+            agent_ids     = []
+            fix_hint      = "Human operator may need to provide this."
+        hq_candidates.append(_FakeConflict())
 
     if not hq_candidates:
-        print("  No HQ needed — all conflicts solvable by agents.")
+        print("  No HQ needed — agents can resolve all issues.")
         return {}, [], []
 
     print(f"  HQ triggers ({len(hq_candidates)}):")
@@ -1730,7 +1734,7 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     if task:
         lines.append(f'  "{(task[:60]+"…") if len(task)>60 else task}"')
     lines.append(f"  {room_a.upper()} (agent_A)  +  {room_b.upper()} (agent_B)")
-    lines.append(f"  총 {len(plan)}개 스텝  |  물리 전달 {n_pass}회  |  상태 알림 {n_info}회")
+    lines.append(f"  {len(plan)} steps  |  {n_pass} handoff(s)  |  {n_info} notify")
     lines.append(SEP)
     lines.append("")
 
@@ -1774,10 +1778,10 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
         badge  = "  "
         if ht == "PASS":
             suffix = f"  ──────► {tgt}"
-            badge  = "[전달↑]"
+            badge  = "[PASS→]"
         elif ht == "INFORM":
             suffix = f"  ~~~~~~~► {tgt}"
-            badge  = "[알림↑]"
+            badge  = "[NOTIFY→]"
 
         # receive step 감지 — cross-agent PASS에 depend
         cross_pass = [id_to_step[d] for d in deps
@@ -1785,7 +1789,7 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
                       and id_to_step[d].get("agent_id") != agent
                       and id_to_step[d].get("handoff_type") == "PASS"]
         if cross_pass:
-            badge = "[수신↓]"
+            badge = "[←RECV]"
 
         lines.append(f"  {idx:>2}. [{room}] [{agent}] {badge}")
         lines.append(f"      {action}{suffix}")
@@ -1795,7 +1799,7 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
         for dep in cross_all:
             da = dep["action"]
             ds = (da[:45]+"…") if len(da)>45 else da
-            lines.append("      ⏳ " + dep.get('agent_id','?') + "의 '" + ds + "' 완료 후 실행")
+            lines.append("      → waits for " + dep.get('agent_id','?') + ": '" + ds + "'")
         lines.append("")
 
     coord: List[str] = []
@@ -1810,19 +1814,19 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
                 if s["step_id"] in r.get("depends_on",[])
                 and r.get("agent_id") != src]
         if ht == "PASS":
-            ra = recv[0]["action"] if recv else "수신 스텝 없음"
+            ra = recv[0]["action"] if recv else "no receive step"
             rs = (ra[:45]+"…") if len(ra)>45 else ra
             coord += [
-                f"  [전달↑] {src} ──────► {tgt}",
-                "     전달: " + short,
-                f"  [수신↓] {tgt} ◄──────",
-                "     수신: " + rs,
+                f"  [PASS]   {src} ──────► {tgt}",
+                "     sent:  " + short,
+                f"  [RECV] {tgt} ◄──────",
+                "     recv:  " + rs,
                 "",
             ]
         elif ht == "INFORM":
             coord += [
-                f"  [알림↑] {src} ~~~~~~~► {tgt}",
-                "     알림: " + short,
+                f"  [INFORM] {src} ~~~~~~~► {tgt}",
+                "     msg:   " + short,
                 "",
             ]
 
