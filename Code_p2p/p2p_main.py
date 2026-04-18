@@ -1,21 +1,13 @@
-# main.py
-# 진입점: run() — 단일 실험 실행
-#
-# 파이프라인:
-#   Phase 1 : Observation & Offer Generation
-#   Phase 2 : Independent Local Planning
-#   Phase 3 : Conflict Detection
-#   Phase 4 : P2P Negotiation (구조화 제안, hard limit 3라운드, step lock)
-#   Phase 5 : Convergence Check (rule-based)
-#   Phase 6 : Deferred Human Query (필요 시에만)
-#   Finalize: Rule-based merge (LLM 호출 없음)
-#
-# 사용 예:
-#   from p2p_main import run, list_tasks
-#   result = run(task_id="task_003", img_a="...", img_b="...")
-#
-#   from p2p_ablation import run_ablation
-#   results = run_ablation(task_id="task_003", img_a=..., img_b=...)
+# p2p_main.py
+# Pipeline:
+#   OBSERVATION   : offer + draft plan (VLM × 2)
+#   COORDINATION  : mutual awareness final plan (VLM × 2)
+#   HANDOFF SYNC  : rule-based PASS coordination
+#   CONFLICT CHECK: conflict detection
+#   NEGOTIATION   : P2P negotiation (VLM × up to 6)
+#   PLAN QUALITY  : quality check
+#   HUMAN QUERY   : human clarification + VLM polish (VLM × 1 + 2, rare)
+#   MERGE         : final joint plan
 
 from __future__ import annotations
 
@@ -29,8 +21,8 @@ from p2p_phases import (
     format_joint_plan,
     local_plan_to_dict,
     offer_to_dict,
-    phase1_offer,
-    phase2_local_plan,
+    observe_and_draft,
+    coordinate,
     phase3_conflict_detection,
     phase4_negotiation,
     phase5_convergence_check,
@@ -79,27 +71,10 @@ def run(
     use_offer:       bool = True,
     use_negotiation: bool = True,
     use_human_query: bool = True,
-    use_handoff:     bool = True,   # 하위 호환성 유지 (내부적으로 무시됨)
+    use_handoff:     bool = True,
     label:           Optional[str] = None,
     verbose:         str  = "full",
 ) -> Dict:
-    """
-    P2P Collaborative VLM Planning 전체 파이프라인.
-
-    Args:
-        task_id        : tasks.json의 ID
-        img_a          : agent_A 이미지 경로
-        img_b          : agent_B 이미지 경로
-        use_offer      : False → offer 없이 방 타입만으로 플래닝 (ablation)
-        use_handoff    : False → handoff 선언 없이 플래닝 (ablation)
-        use_human_query: False → Phase 6 skip (ablation)
-        use_negotiation: False → Phase 4 skip (ablation)
-        label          : 실험 레이블
-        verbose        : "full" | "summary" | "minimal"
-
-    Returns:
-        실험 결과 dict
-    """
     if task_id is None:
         list_tasks()
         raise ValueError("task_id를 지정해주세요.")
@@ -118,43 +93,43 @@ def run(
     print(f"  P2P COLLABORATIVE VLM PLANNING — {label}")
     print("█" * 68)
     print(f"  Task    : {task[:80]}{'...' if len(task) > 80 else ''}")
-    print(f"  Flags   : offer={use_offer} | handoff={use_handoff} | "
-          f"negotiation={use_negotiation} | hq={use_human_query}")
+    print(f"  Flags   : offer={use_offer} | negotiation={use_negotiation} | hq={use_human_query}")
 
-    # ── Phase 1 ──────────────────────────────────────────────────────────────
-    offer_a, offer_b = phase1_offer(img_a, img_b, task, verbose=verbose)
+    # ── OBSERVATION: offer + draft (VLM × 2) ─────────────────────────────────
+    offer_a, offer_b, draft_a, draft_b = observe_and_draft(
+        img_a, img_b, task, verbose=verbose,
+    )
 
-    # ── Phase 2 ──────────────────────────────────────────────────────────────
-    plan_a, plan_b = phase2_local_plan(
-        offer_a, offer_b, img_a, img_b, task,
+    # ── COORDINATION: mutual awareness final plan (VLM × 2) ──────────────────
+    plan_a, plan_b = coordinate(
+        offer_a, offer_b, draft_a, draft_b,
+        img_a, img_b, task,
         use_offer=use_offer, verbose=verbose,
     )
 
-    # conflicts before negotiation (논문 메트릭용)
-    conflicts = phase3_conflict_detection(plan_a, plan_b, offer_a, offer_b, verbose=verbose)
+    # ── CONFLICT CHECK ────────────────────────────────────────────────────────
+    conflicts   = phase3_conflict_detection(plan_a, plan_b, offer_a, offer_b, verbose=verbose)
     n_conflicts = len(conflicts)
 
-    # ── Phase 4 ──────────────────────────────────────────────────────────────
+    # ── NEGOTIATION: P2P (VLM × up to 6) ─────────────────────────────────────
     if use_negotiation:
         neg_steps_a, neg_steps_b, neg_rounds = phase4_negotiation(
             plan_a, plan_b, offer_a, offer_b, conflicts,
             img_a, img_b, task, verbose=verbose,
         )
     else:
-        _banner("PHASE 4 — P2P NEGOTIATION")
+        _banner("NEGOTIATION — P2P")
         print("  [ABLATION] Negotiation disabled.")
         neg_steps_a = plan_steps_to_dicts(plan_a.steps)
         neg_steps_b = plan_steps_to_dicts(plan_b.steps)
         neg_rounds  = []
 
-    # ── Phase 5 ──────────────────────────────────────────────────────────────
-    # Phase 5용 conflict list: 협상 후 재탐지가 이상적이지만
-    # 비용 절감을 위해 원래 conflicts를 넘기고 수렴 조건만 rule-based로 판단
+    # ── PLAN QUALITY CHECK ────────────────────────────────────────────────────
     convergence = phase5_convergence_check(
         neg_steps_a, neg_steps_b, offer_a, offer_b, conflicts,
     )
 
-    # ── Phase 6 ──────────────────────────────────────────────────────────────
+    # ── HUMAN QUERY (rare) + VLM polish ──────────────────────────────────────
     human_answers, hq_triggers, hq_asked = phase6_human_query(
         plan_a, plan_b, offer_a, offer_b,
         img_a, img_b,
@@ -162,7 +137,7 @@ def run(
         use_human_query=use_human_query,
     )
 
-    # ── Finalize (rule-based merge, LLM 없음) ─────────────────────────────────
+    # ── MERGE ─────────────────────────────────────────────────────────────────
     joint = phase_finalize(
         neg_steps_a, neg_steps_b,
         offer_a, offer_b,
@@ -170,15 +145,13 @@ def run(
         verbose=verbose,
     )
 
-    # ── 논문 메트릭 계산 ──────────────────────────────────────────────────────
-    # conflict_reduction: 협상 전후 conflict 수 감소율
+    # ── 메트릭 ────────────────────────────────────────────────────────────────
     conflict_reduction = (
-        (n_conflicts - convergence.unresolved_conflicts.__len__()) / max(n_conflicts, 1)
+        (n_conflicts - len(convergence.unresolved_conflicts)) / max(n_conflicts, 1)
     )
 
-    # observability: 각 step이 자기 obs_scope 내에 있는 비율
-    scope_a = set(re.findall(r"\w+", offer_a.obs_scope.lower()))
-    scope_b = set(re.findall(r"\w+", offer_b.obs_scope.lower()))
+    scope_a  = set(re.findall(r"\w+", offer_a.obs_scope.lower()))
+    scope_b  = set(re.findall(r"\w+", offer_b.obs_scope.lower()))
     can_kw_a: set = set()
     can_kw_b: set = set()
     for cd in offer_a.can_do: can_kw_a |= _kw(cd)
@@ -194,8 +167,6 @@ def run(
             obs_violations += 1
     observability_rate = round(1.0 - obs_violations / max(len(joint), 1), 3)
 
-
-    # cross-agent depends_on 수
     id_to_agent = {s["step_id"]: s.get("agent_id") for s in joint}
     cross_deps  = sum(
         1 for s in joint
@@ -203,41 +174,34 @@ def run(
         if id_to_agent.get(d) and id_to_agent[d] != s.get("agent_id")
     )
 
-    # PASS 매칭률
-    pass_steps    = {s["step_id"] for s in joint if s.get("handoff_type") == "PASS"}
-    all_deps      = {d for s in joint for d in s.get("depends_on", [])}
-    matched_pass  = len(pass_steps & all_deps)
+    pass_steps   = {s["step_id"] for s in joint if s.get("handoff_type") == "PASS"}
+    all_deps     = {d for s in joint for d in s.get("depends_on", [])}
+    matched_pass = len(pass_steps & all_deps)
     handoff_match = matched_pass / max(len(pass_steps), 1) if pass_steps else 1.0
 
     U_joint = compute_joint_uncertainty(joint)
 
     metrics = {
-        # 플랜 품질 지표 (핵심)
         "handoff_match_rate":  round(handoff_match, 3),
         "cross_agent_deps":    cross_deps,
         "conflict_reduction":  round(conflict_reduction, 3),
-        "observability_rate":  round(observability_rate, 3),
+        "observability_rate":  observability_rate,
         "U_joint":             U_joint,
-        # 협상/HQ 지표
         "negotiation_rounds":  len(neg_rounds),
         "hq_triggered":        len(hq_triggers),
         "hq_asked":            len(hq_asked),
-        # 참고용
         "conflicts":           n_conflicts,
         "conflicts_after":     len(convergence.unresolved_conflicts),
     }
 
-    # ── 최종 출력 ─────────────────────────────────────────────────────────────
     print("\n" + "█" * 68)
     print(f"  FINAL JOINT PLAN — {label}")
     print("█" * 68)
-    print(format_joint_plan(joint))
-
+    print(format_joint_plan(joint, task))
     print(f"\n  METRICS")
     print(f"  {'─'*40}")
     for k, v in metrics.items():
         print(f"  {k:<28} {v}")
-
 
     return {
         "label":   label,
@@ -245,7 +209,6 @@ def run(
         "task":    task,
         "flags": {
             "use_offer":       use_offer,
-            "use_handoff":     use_handoff,
             "use_negotiation": use_negotiation,
             "use_human_query": use_human_query,
         },
@@ -257,7 +220,7 @@ def run(
             "agent_A": local_plan_to_dict(plan_a),
             "agent_B": local_plan_to_dict(plan_b),
         },
-        "conflicts": [asdict(c) for c in conflicts],
+        "conflicts":    [asdict(c) for c in conflicts],
         "negotiation": {
             "rounds": len(neg_rounds),
             "history": [
@@ -271,7 +234,6 @@ def run(
             ],
         },
         "convergence": {
-            "converged":        convergence.converged,
             "no_missing_deps":  convergence.no_missing_deps,
             "no_dep_cycle":     convergence.no_dep_cycle,
             "observability_ok": convergence.observability_ok,
@@ -279,7 +241,6 @@ def run(
         },
         "human_answers": human_answers,
         "hq_triggers":   hq_triggers,
-        "hq_asked":      hq_asked,
         "joint_plan":    joint,
         "metrics":       metrics,
     }
