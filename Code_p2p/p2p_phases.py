@@ -236,6 +236,69 @@ Return ONLY valid JSON inside <JSON> tags.
 </JSON>"""
 
 
+def _parse_offer(raw: str, agent_id: str) -> Offer:
+    data = extract_json(raw)
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        data = {}
+
+    cannot_do: List[CannotEntry] = []
+    uncertain_count = 0
+    for item in data.get("cannot_do", [])[:MAX_CANNOT_DO]:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action", "")).strip()
+        reason = _norm_reason(item.get("reason", "UNCERTAIN"))
+        if action:
+            if reason == "UNCERTAIN":
+                uncertain_count += 1
+            cannot_do.append(CannotEntry(action, reason))
+
+    cannot_set = {c.action.lower() for c in cannot_do}
+    seen: Set[str] = set()
+    can_do: List[str] = []
+    for x in data.get("can_do", []):
+        a = str(x).strip()
+        if not a or a.lower() in seen:
+            continue
+        if any(_fuzzy_match(a, c, min_overlap=2) for c in cannot_set):
+            continue
+        seen.add(a.lower())
+        can_do.append(a)
+        if len(can_do) >= MAX_CAN_DO:
+            break
+
+    raw_scope = data.get("obs_scope", "")
+    obs_scope = (
+        ", ".join(str(x).strip() for x in raw_scope)
+        if isinstance(raw_scope, list)
+        else str(raw_scope).strip()
+    )
+
+    conf_raw = {str(k): clamp01(v) for k, v in data.get("conf", {}).items()}
+
+    raw_provides = [str(x).strip() for x in data.get("can_provide", []) if str(x).strip()]
+    can_provide  = [p for p in raw_provides if _is_passable(p)]
+    filtered     = [p for p in raw_provides if not _is_passable(p)]
+    if filtered:
+        print(f"  [OFFER] non-passable items filtered from can_provide: {filtered}")
+
+    return Offer(
+        agent_id        = agent_id,
+        room_type       = str(data.get("room_type", "")).strip(),
+        observation     = str(data.get("observation", "")).strip(),
+        obs_scope       = obs_scope,
+        can_do          = can_do,
+        cannot_do       = cannot_do,
+        conf            = _match_conf(conf_raw, can_do),
+        can_provide     = can_provide,
+        need_from_other = [str(x).strip() for x in data.get("need_from_other", [])
+                           if str(x).strip()],
+        uncertain_count = uncertain_count,
+    )
+
+
 def _parse_obs_draft(raw: str, agent_id: str, step_offset: int = 0) -> tuple:
     """통합 obs+draft JSON 파싱 → (Offer, LocalPlan) 반환."""
     data = extract_json(raw)
