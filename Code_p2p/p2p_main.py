@@ -135,6 +135,7 @@ def run(
         img_a, img_b,
         task=task,
         use_human_query=use_human_query,
+        unresolved_conflicts=convergence.unresolved_conflicts,
     )
 
     # ── MERGE ─────────────────────────────────────────────────────────────────
