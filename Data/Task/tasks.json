@@ -41,19 +41,19 @@
     "id": "task_003",
     "description": "Prepare the house for a full day of working from home. Set up a comfortable workspace in the living room and bring simple food and drinks from the kitchen to the living room workspace for easy access.",
     "ground_truth": {
-      "living room": [
-        "Cleared the table",
-        "Identified a comfortable sofa position for sitting",
-        "Adjusted lighting to an appropriate brightness for working",
-        "Secured space to place food"
-      ],
       "kitchen": [
-        "Checked ingredients for meals",
-        "Organized snacks for easy access",
-        "Organized drinks for easy access",
-        "Prepared a cup",
-        "Cleaned the sink to avoid distractions"
-      ]
+      "Pick up simple food items or snacks",
+      "Pick up drink bottles or cans",
+      "Pick up a cup",
+      "Place the food, drinks, and cup on a carrying tray",
+      "Move dirty dishes into the sink to tidy the area"
+    ],
+    "living room": [
+      "Clear objects off the table to make space for a laptop and food",
+      "Arrange cushions or clear items off the sofa for comfortable sitting",
+      "Turn on the main room light or desk lamp",
+      "Place the tray with food and drinks on the living room table"
+    ]
     }
   },
   {
