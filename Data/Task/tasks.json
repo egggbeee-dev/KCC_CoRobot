@@ -26,10 +26,9 @@
      "kitchen": [
       "Pick up a cup",
       "Pick up a bowl",
-      "Prepare warm water in the cup",
+      "Prepare warm wateror tea in the cup",
       "Prepare light food in the bowl",
-      "Place the cup on a tray to carry",
-      "Place the bowl on a tray to carry"
+      "Place the cup or bowl on a tray to carry",
     ],
     "bedroom": [
       "Arrange the pillows or blankets on the bed",
