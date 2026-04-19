@@ -7,15 +7,17 @@
       "Pick up snack packages or bowls",
       "Pick up drink bottles",
       "Pick up cups",
-      "Place snacks, drinks, and cups on a carrying tray"
+      "Place snacks on a carrying tray",
+      "Place drinks on a carrying tray",
+      "Place cups on a carrying tray"
     ],
     "living room": [
       "Move items blocking the TV view to another location",
       "Clear objects off the sofa to make room for sitting",
       "Arrange cushions on the sofa",
-      "Turn off the main room light",
+      "Turn off the main light",
       "Turn on the ambient lamp or mood light",
-      "Place the tray with snacks and drinks on the table near the sofa"
+      "Place the tray on the table near the sofa"
     ]
     }
   },
