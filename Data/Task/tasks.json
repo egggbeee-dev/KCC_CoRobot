@@ -162,15 +162,14 @@
     "description": "The baby needs to leave for daycare in 30 minutes. Prepare a simple meal in the kitchen using visible items, and organize the bathroom with towels and hygiene items to wash the baby.",
     "ground_truth": {
       "kitchen": [
-        "Pick up simple baby food or snacks",
-        "Pick up a baby drink or milk bottle",
-        "Place the food and drink in a bag or on a tray to carry out"
+        "Pick up simple food",
+        "Pick up a drink",
+        "Place the food and drink on a tray to carry out"
     ],
      "bathroom": [
         "Pick up a clean towel",
         "Place the towel near the sink",
         "Pick up the baby soap or wash",
-        "Place the soap next to the sink for easy access"
       ]
     }
   },
