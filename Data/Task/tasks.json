@@ -6,8 +6,7 @@
       "kitchen": [
         "Checked snack ingredients available in the environment",
         "Took out prepared drinks",
-        "Set up cups",
-        "Set up a tray"
+        "Set up cups"
       ],
       "living room": [
         "Removed objects blocking the TV view",
@@ -60,7 +59,6 @@
     "description": "A guest is arriving in 30 minutes for a pajama party in the bedroom. Quickly tidy the kitchen and bedroom, prepare simple snacks, and set up the bedroom as the main space for guests to relax and eat.",
     "ground_truth": {
       "kitchen": [
-        "Washed the dishes",
         "Tidied up items",
         "Prepared simple snacks",
         "Prepared simple drinks",
@@ -123,7 +121,6 @@
     "ground_truth": {
     "kitchen": [
         "Checked that the stove is completely turned off",
-        "Checked that the oven is completely turned off",
         "Discarded any perishable food if present",
         "Cleared items from the table"
       ],
@@ -140,10 +137,10 @@
     "description": "Unexpected guests are coming in 15 minutes. Quickly prepare a snack tray in the kitchen using visible items and tidy the living room for hosting.",
     "ground_truth": {
       "kitchen": [
-        "Quickly selected visible snacks",
+        "Quickly selected visible foods",
         "Checked and selected drinks",
         "Prepared cups together",
-        "Organized snacks on a tray for easy transport",
+        "Organized foods on a tray for easy transport",
         "Organized drinks on a tray for easy transport"
       ],
       "living room": [
