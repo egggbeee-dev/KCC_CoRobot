@@ -525,6 +525,7 @@ def _compute_cq(offers: Dict, negotiation: Dict,
         ht = step.get("handoff_type")
         ta = step.get("target_agent")
         if not ht or not ta: continue
+        if ht in ("PASS", "INFORM"): continue
         can_do = offers.get(ta, {}).get("can_do", [])
         action = step.get("action", "")
         matched = any(action.lower() in c.lower() or c.lower() in action.lower()
@@ -542,7 +543,8 @@ def _compute_cq(offers: Dict, negotiation: Dict,
     no_change = (negotiation.get("rounds", 0) > 0) and bool(initial_actions) and (initial_actions == final_actions)
 
     total        = len(joint_plan)
-    problem_cnt  = len(invalid_steps) + (total if no_change else 0)
+    # no_change 패널티 제거 — 협상 품질은 LLM이 직접 평가
+    problem_cnt  = len(invalid_steps)
     problem_rate = min(1.0, problem_cnt / total) if total > 0 else 0.0
 
     # 2단계: LLM 협상 품질
@@ -572,8 +574,14 @@ def _compute_cq(offers: Dict, negotiation: Dict,
               f"## Negotiation ({negotiation.get('rounds',0)} rounds)\n{neg_str}\n\n"
               f"## Final Plan\n{final_str}\n\n"
               f"## Invalid Handoffs\n{invalid_str}\n\n"
-              f"Score 0.0-1.0: 1.0=clearly improved, 0.5=neutral, 0.0=unchanged/worsened.\n"
-              f"Invalid handoffs lower the score significantly.\n"
+              f"Evaluate the QUALITY of the negotiation process (0.0-1.0).\n"
+              f"Consider:\n"
+              f"  - Did agents actively propose meaningful changes?\n"
+              f"  - Were conflicts resolved through negotiation?\n"
+              f"  - Did the final plan improve over the initial plan?\n"
+              f"  - Were handoffs properly coordinated?\n"
+              f"Score: 1.0=excellent with clear improvement, 0.7=good with some improvement,\n"
+              f"0.5=negotiation happened but little improvement, 0.3=mostly ineffective, 0.0=no meaningful negotiation.\n"
               f'{{"quality_score":0.0,"reason":"one sentence"}}')
 
     raw    = _llm("You are a robot task planner evaluator. Respond ONLY with valid JSON.",
