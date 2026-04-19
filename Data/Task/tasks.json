@@ -159,12 +159,12 @@
       "kitchen": [
         "Pick up simple food",
         "Pick up a drink",
-        "Place the food and drink on a tray to carry out"
+        "Place the food on a bowl to carry out"
     ],
      "bathroom": [
         "Pick up a clean towel",
         "Place the towel near the sink",
-        "Pick up the baby soap or wash"
+        "Pick up the soap"
       ]
     }
   },
