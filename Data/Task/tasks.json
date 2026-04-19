@@ -107,16 +107,15 @@
     "description": "Prepare the home for an indoor workout session. Clear sufficient open space in the living room for exercise, and prepare a snack tray from the kitchen to keep energy up.",
     "ground_truth": {
       "kitchen": [
-        "Checked if drinks are available",
-        "Prepared a cup to use",
-        "Checked for easily consumable snacks"
-      ],
-      "living room": [
-        "Secured floor space to place exercise equipment",
-        "Removed items from the floor",
-        "Removed elements that could interfere during exercise",
-        "Confirmed the center of the exercise area is clear of obstacles",
-        "Set the lighting to bright to create a pleasant environment"
+      "Pick up a drink bottle or water",
+      "Pick up a cup",
+      "Pick up easily consumable snacks",
+      "Place the drinks, cup, and snacks on a carrying tray"
+    ],
+    "living room": [
+      "Move items or obstacles off the floor to clear a workout space",
+      "Turn on the main room light to make it bright",
+      "Place the snack tray on a nearby table"
       ]
     }
   },
