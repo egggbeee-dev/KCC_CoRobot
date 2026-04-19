@@ -27,7 +27,6 @@
         "Prepared ingredients for warm drinks available in the environment",
         "Checked for easily digestible food ingredients",
         "Prepared a cup",
-        "Prepared a bowl",
         "Set up food to be brought to the bedroom"
       ],
       "bedroom": [
@@ -86,7 +85,6 @@
       "bedroom": [
         "Cleared all unnecessary items from the desk",
         "Set the lighting to bright",
-        "Placed textbooks on the desk",
         "Placed writing tools on the desk",
         "Placed the laptop on the desk",
         "Secured a comfortable chair for long-term work",
@@ -107,7 +105,7 @@
     "description": "Prepare the home for an indoor workout session. Clear sufficient open space in the living room for exercise, and prepare a snack tray from the kitchen to keep energy up.",
     "ground_truth": {
       "kitchen": [
-      "Pick up a drink bottle or water",
+      "Pick up a water",
       "Pick up a cup",
       "Pick up easily consumable snacks",
       "Place the drinks, cup, and snacks on a carrying tray"
