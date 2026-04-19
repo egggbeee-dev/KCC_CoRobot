@@ -858,3 +858,78 @@ def print_batch_summary(reports: List[JudgeReport]):
         )
         print(f"  {r.task_id:<22} {s_str}  {r.final_weighted:>6.3f}  {r.verdict}")
     print()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# run_and_judge
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _extract_img_info(img_path):
+    from pathlib import Path
+    p = Path(img_path)
+    return p.parent.parent.name, p.parent.name, p.name
+
+def _format_joint_plan_table(joint_plan):
+    lines = []
+    for i, s in enumerate(joint_plan, 1):
+        ht  = s.get("handoff_type")
+        dep = s.get("depends_on", [])
+        ht_str  = " [PASS→]" if ht == "PASS" else (" [INFORM→]" if ht == "INFORM" else "")
+        dep_str = f"\n      → waits for: step{dep}" if dep else ""
+        lines.append(f"   {i}. [{s.get('room','')}] [{s.get('agent_id','')}]{ht_str}")
+        lines.append(f"      {s.get('action','')}{dep_str}")
+    return "\n".join(lines)
+
+def print_experiment_table(task_id, task_desc, vlm_model, img_a, img_b, result, report):
+    room_a, mode_a, name_a = _extract_img_info(img_a)
+    room_b, mode_b, name_b = _extract_img_info(img_b)
+    print("\n" + "═"*72)
+    print("  EXPERIMENT RESULT")
+    print("═"*72)
+    print(f"  Task ID   : {task_id}")
+    print(f"  Task      : {task_desc[:80]}{'...' if len(task_desc)>80 else ''}")
+    print(f"  VLM Model : {vlm_model}")
+    print(f"  Agent A   : {room_a}/{mode_a}/{name_a}")
+    print(f"  Agent B   : {room_b}/{mode_b}/{name_b}")
+    print(f"  {'─'*70}")
+    print(f"  FINAL JOINT PLAN ({len(result['joint_plan'])} steps)")
+    print(f"  {'─'*70}")
+    print(_format_joint_plan_table(result["joint_plan"]))
+    print(f"  {'─'*70}")
+    print("  LLM-AS-A-JUDGE")
+    print(f"  {'─'*70}")
+    print(f"  {'Key':<5} {'Metric':<30} {'W':>4}  {'Score':>5}  Bar")
+    print(f"  {'─'*70}")
+    for m in report.metrics:
+        bar = "█"*int(m.score) + "░"*(10-int(m.score))
+        print(f"  {m.key:<5} {m.name:<30} {m.weight:>4.2f}  {m.score:>5.1f}  {bar}")
+        print(f"        ↳ {m.evidence[:65]}")
+    print(f"  {'─'*70}")
+    print(f"  WEIGHTED TOTAL : {report.final_weighted:.3f} / 10")
+    print(f"  VERDICT        : {report.verdict.upper()}")
+    print(f"  TOP ISSUE      : {report.top_issue}")
+    print("═"*72)
+
+def run_and_judge(task_id, img_a, img_b, vlm_model="gpt-4o", verbose="summary", save_path=None):
+    from p2p_main import run
+    import json as _json
+    result = run(task_id=task_id, img_a=img_a, img_b=img_b, verbose=verbose)
+    report = judge(result, img_a=img_a, img_b=img_b, verbose=False)
+    print_experiment_table(task_id, result["task"], vlm_model, img_a, img_b, result, report)
+    record = {
+        "task_id": task_id, "task": result["task"], "vlm_model": vlm_model,
+        "img_a": img_a, "img_b": img_b,
+        "joint_plan": result["joint_plan"],
+        "judge": {
+            "scores": {m.key: m.score for m in report.metrics},
+            "total": report.final_weighted,
+            "verdict": report.verdict,
+            "top_issue": report.top_issue,
+        },
+        "planning_metrics": result.get("metrics", {}),
+    }
+    if save_path:
+        with open(save_path, "w", encoding="utf-8") as f:
+            _json.dump(record, f, ensure_ascii=False, indent=2, default=str)
+        print(f"  Saved: {save_path}")
+    return result, report, record
