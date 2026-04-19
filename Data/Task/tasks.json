@@ -4,22 +4,19 @@
     "description": "Prepare the kitchen and living room for a family movie night. Identify and prepare snacks and drinks using ingredients you can observe in the kitchen, then arrange the living room seating and lighting for a viewing experience.",
     "ground_truth": {
       "kitchen": [
-      "Pick up snack packages or bowls",
-      "Pick up drink bottles or cans",
-      "Pick up cups",
-      "Place snacks on a carrying tray",
-      "Place drinks on a carrying tray",
-      "Place cups on a carrying tray"
-    ],
-    "living room": [
-      "Move items blocking the TV view to another location",
-      "Clear objects off the sofa to make room for sitting",
-      "Arrange cushions on the sofa",
-      "Turn off the main room light",
-      "Turn on the ambient lamp or mood light",
-      "Place the tray with snacks on the table near the sofa",
-      "Place the tray with drinks on the table near the sofa"
-    ]
+        "Checked snack ingredients available in the environment",
+        "Took out prepared drinks",
+        "Set up cups",
+        "Set up a tray"
+      ],
+      "living room": [
+        "Removed objects blocking the TV view",
+        "Arranged the sofa so people can sit",
+        "Arranged cushions so people can sit",
+        "Dimmed the main lighting",
+        "Turned on indirect lighting",
+        "Placed snacks around the sofa"
+      ]
     }
   },
   {
