@@ -124,15 +124,16 @@
     "description": "Prepare the home for a long-term vacation. Collect any remaining food items from the kitchen and bring them to the bedroom so I can pack them before leaving.",
     "ground_truth": {
     "kitchen": [
-      "Turn off the stove",
-      "Turn off the oven",
-      "Pick up remaining food items, packages, or drinks",
-      "Place the collected food items on a tray to carry"
-    ],
-    "bedroom": [
-      "Place the tray or basket with food items on the bed or desk",
-      "Turn off any running electronics or room lights",
-      "Unplug cables or chargers"
+        "Checked that the stove is completely turned off",
+        "Checked that the oven is completely turned off",
+        "Discarded any perishable food if present",
+        "Cleared items from the table"
+      ],
+      "bedroom": [
+        "Checked if there is food in the bedroom",
+        "Checked if there are drinks in the bedroom",
+        "Checked if there is food",
+        "Confirmed no electronics are running"
       ]
     }
   },
