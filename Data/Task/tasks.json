@@ -23,18 +23,18 @@
     "id": "task_002",
     "description": "I'm not feeling well today and staying home. Prepare light food and warm drinks in the kitchen using visible items, and bring them to the bedroom to set up for my comfortable rest.",
     "ground_truth": {
-     "kitchen": [
-      "Pick up a cup",
-      "Pick up a bowl",
-      "Prepare warm wateror tea in the cup",
-      "Prepare light food in the bowl",
-      "Place the cup or bowl on a tray to carry",
-    ],
-    "bedroom": [
-      "Arrange the pillows or blankets on the bed",
-      "Turn off the main light or turn on a dim lamp",
-      "Clear away items from the desk to make space"
-    ]
+      "kitchen": [
+        "Prepared ingredients for warm drinks available in the environment",
+        "Checked for easily digestible food ingredients",
+        "Prepared a cup",
+        "Prepared a bowl",
+        "Set up food to be brought to the bedroom"
+      ],
+      "bedroom": [
+        "Made the bed for comfort",
+        "Dimmed the lighting",
+        "Tidied the desk"
+      ]
     }
   },
   {
