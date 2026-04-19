@@ -7,9 +7,7 @@
       "Pick up snack packages or bowls",
       "Pick up drink bottles or cans",
       "Pick up cups",
-      "Place snacks on a carrying tray",
-      "Place drinks on a carrying tray",
-      "Place cups on a carrying tray"
+      "Place snacks, drinks, and cups on a carrying tray"
     ],
     "living room": [
       "Move items blocking the TV view to another location",
