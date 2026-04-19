@@ -26,13 +26,15 @@
       "kitchen": [
       "Pick up a cup",
       "Pick up a bowl",
-      "Prepare warm tea or water in the cup",
-      "Prepare light food or soup in the bowl",
-      "Place the cup and bowl on a tray to carry"
+      "Prepare water in the cup",
+      "Prepare light food in the bowl",
+      "Place the cup and bowl on a tray to carry",
+      "Place the bowl on a tray to carry"
     ],
     "bedroom": [
-      "Arrange the pillows and blankets on the bed",
-      "Turn off the main light or turn on a dim lamp",
+      "Arrange the pillows on the bed",
+      "Arrange the blankets on the bed",
+      "Turn off the light",
       "Clear away items from the desk to make space"
       ]
     }
