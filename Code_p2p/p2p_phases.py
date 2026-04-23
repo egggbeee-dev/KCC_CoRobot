@@ -662,16 +662,20 @@ def _ensure_pass(
             return
 
         coord_time = pass_step.time_min
-        # receiver 플랜의 own step_id 범위 (cross-agent deps 방지)
+        # receiver 플랜 step_id 집합 — 이 범위 + PASS step_id만 deps로 허용
         receiver_ids = {s.step_id for s in receiver.steps}
+        # sender 플랜의 step_id도 추출 (A가 B PASS 받는 경우, sender=B이므로 B ids 제외)
+        # 즉 rs.depends_on에서 receiver 자신 ids가 아닌 외부 ids는 PASS step_id 하나만 남김
         for rs in targets:
-            if pass_step.step_id not in rs.depends_on:
-                rs.depends_on = sorted(set(rs.depends_on + [pass_step.step_id]))
-            # cross-agent deps 정제: receiver 자신의 step_id + PASS step_id만 허용
-            rs.depends_on = [
+            # 기존 cross-agent deps 제거 (receiver 자신 ids + PASS step_id만 유지)
+            clean_deps = [
                 d for d in rs.depends_on
-                if d in receiver_ids or d == pass_step.step_id
+                if d in receiver_ids  # receiver 자신 step
             ]
+            # PASS step_id 추가 (중복 방지)
+            if pass_step.step_id not in clean_deps:
+                clean_deps = sorted(clean_deps + [pass_step.step_id])
+            rs.depends_on = clean_deps
             if rs.time_min <= coord_time:
                 rs.time_min = coord_time + 1
             print(f"  [ENSURE] {rid} step{rs.step_id} "
@@ -969,9 +973,10 @@ def detect_conflicts(
         "refrigerator":{"refrigerator", "fridge"},
         "tv":          {"television", "tv", "monitor", "screen"},
         "television":  {"television", "tv", "monitor"},
-        "worktop":     {"counter", "countertop", "worktop", "surface"},
-        "counter":     {"counter", "countertop", "worktop", "surface"},
-        "countertop":  {"counter", "countertop", "worktop", "surface"},
+        "worktop":     {"counter", "countertop", "countertops", "worktop", "surface"},
+        "counter":     {"counter", "countertop", "countertops", "worktop", "surface"},
+        "countertop":  {"counter", "countertop", "countertops", "worktop", "surface"},
+        "countertops": {"counter", "countertop", "countertops", "worktop", "surface"},
         "blanket":     {"blanket", "duvet", "comforter", "quilt"},
         "duvet":       {"blanket", "duvet", "comforter", "quilt"},
         "pillow":      {"pillow", "cushion"},
@@ -1936,10 +1941,23 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     max_t    = max((s.get("time_min", 0) for s in plan), default=0)
     SEP = "━" * 68
     pass_sids   = {s["step_id"] for s in plan if s.get("handoff_type") == "PASS"}
-    _RECV_VERBS = {"receive","accept","pick","collect","get","take"}
+    # RECV 판단: depends_on에 PASS step이 있거나, 명확한 수령 동사 + 공간 키워드
+    _RECV_VERBS = {"receive","accept","collect"}
+    _RECV_CONTEXT = {"doorway","pickup","handover","handoff","from agent","from kitchen",
+                     "from bedroom","from living","from other","tray from","items from"}
     def _is_recv(s: Dict) -> bool:
-        first = s.get("action","").lower().split()[0] if s.get("action","").strip() else ""
-        return first in _RECV_VERBS or any(d in pass_sids for d in s.get("depends_on", []))
+        # 1순위: depends_on에 PASS step이 포함돼 있으면 RECV
+        if any(d in pass_sids for d in s.get("depends_on", [])):
+            return True
+        action = s.get("action","").lower()
+        first  = action.split()[0] if action.strip() else ""
+        # 2순위: 명확한 수령 동사
+        if first in _RECV_VERBS:
+            return True
+        # 3순위: pick/get/take는 수령 문맥(doorway, from agent 등)이 있을 때만
+        if first in {"pick","get","take"}:
+            return any(ctx in action for ctx in _RECV_CONTEXT)
+        return False
     sorted_plan = sorted(plan, key=lambda s: (s.get("time_min", 0), s.get("agent_id", "")))
     lines: List[str] = [SEP]
     task_str = task[:65] + "…" if len(task) > 65 else task
