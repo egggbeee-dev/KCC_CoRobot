@@ -617,7 +617,7 @@ def _ensure_pass(
 
         # receiver step이 없으면 자동 추가
         if not targets:
-            _add_receive_step(pass_step, receiver, s_offer, rid)
+            _add_receive_step(pass_step, receiver, s_offer, rid, r_offer)
             return
 
         coord_time = pass_step.time_min
@@ -629,11 +629,12 @@ def _ensure_pass(
             print(f"  [ENSURE] {rid} step{rs.step_id} "
                   f"'{rs.action[:40]}' ← PASS step{pass_step.step_id} "
                   f"(T={rs.time_min}m)")
-
+                  
     def _add_receive_step(
         pass_step: PlanStep,
         receiver: LocalPlan,
-        s_offer: Offer,
+        s_offer: Offer
+        r_offer: Offer,
         rid: str,
     ) -> None:
         """receiver 플랜에 receive step 자동 추가."""
