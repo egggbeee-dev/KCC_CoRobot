@@ -472,8 +472,14 @@ def _normalize_pass(steps: List[PlanStep]) -> List[PlanStep]:
             s.handoff_type = None; s.target_agent = None; continue
 
         if not s.depends_on:
-            print(f"  [NORM] step{s.step_id} PASS removed: no depends_on")
-            s.handoff_type = None; s.target_agent = None; continue
+            # 제거 대신, 직전 non-PASS step을 depends_on으로 자동 연결
+            prev_steps = [p for p in steps if p.step_id < s.step_id and not p.handoff_type]
+            if prev_steps:
+                s.depends_on = [max(prev_steps, key=lambda p: p.step_id).step_id]
+                print(f"  [NORM] step{s.step_id} PASS: auto-linked depends_on={s.depends_on}")
+            else:
+                print(f"  [NORM] step{s.step_id} PASS removed: no depends_on and no prev step")
+                s.handoff_type = None; s.target_agent = None; continue
 
         if not [d for d in s.depends_on if d in my_ids]:
             print(f"  [NORM] step{s.step_id} PASS removed: deps not in own plan")
@@ -1056,7 +1062,12 @@ LOCKED step_ids (DO NOT touch): {sorted(locked) or '(none)'}
 - REDUNDANCY → field="delete", new_value="true" for the duplicate step
 - TEMPORAL   → field="time_min", new_value="NEW_TIME"
 - CANNOT_DO  → field="delete", new_value="true"
-- To ACCEPT other agent's proposal → reason="ACCEPT"
+
+ACCEPT RULE (CRITICAL — required for convergence):
+- If the other agent proposed a change you AGREE with, you MUST echo it back with reason="ACCEPT".
+- Format: {{"step_id": X, "agent_id": "<owner>", "field": "<field>", "new_value": "<same value>", "reason": "ACCEPT"}}
+- Without ACCEPT from you, the change is NOT finalized and the conflict stays open next round.
+- When in doubt, ACCEPT the other agent's proposal rather than proposing a different fix.
 
 <JSON>
 {{"proposals":[
@@ -1131,13 +1142,21 @@ def _lock_steps(
     props_b: List[NegotiationProposal],
     conflict_sids: Set[int], existing: Set[int],
 ) -> Set[int]:
-    acc_b = {p.step_id for p in props_b if p.reason.upper() == "ACCEPT"}
-    acc_a = {p.step_id for p in props_a if p.reason.upper() == "ACCEPT"}
-    prop_a = {p.step_id for p in props_a if p.reason.upper() != "ACCEPT"}
-    prop_b = {p.step_id for p in props_b if p.reason.upper() != "ACCEPT"}
-    agreed    = (prop_a & acc_b) | (prop_b & acc_a)
-    # uncontested는 lock 안 함 — 미해결 conflict는 다음 라운드에서 처리
-    return existing | agreed
+    # ACCEPT는 부분 문자열 매칭으로 확인 (LLM이 "ACCEPT: ..." 식으로 반환하는 경우 포함)
+    acc_b  = {p.step_id for p in props_b if "ACCEPT" in p.reason.upper()}
+    acc_a  = {p.step_id for p in props_a if "ACCEPT" in p.reason.upper()}
+    prop_a = {p.step_id for p in props_a if "ACCEPT" not in p.reason.upper()}
+    prop_b = {p.step_id for p in props_b if "ACCEPT" not in p.reason.upper()}
+
+    # 양측 명시적 합의
+    agreed = (prop_a & acc_b) | (prop_b & acc_a)
+
+    # 상대가 반박하지 않은 제안은 uncontested → lock
+    # (LLM이 ACCEPT를 정확히 반환하지 않아도 수렴 가능하게)
+    uncontested_a = prop_a - prop_b   # B가 같은 step을 counter-propose하지 않음
+    uncontested_b = prop_b - prop_a   # A가 같은 step을 counter-propose하지 않음
+
+    return existing | agreed | uncontested_a | uncontested_b
 
 
 def phase4_negotiation(
@@ -1164,11 +1183,41 @@ def phase4_negotiation(
     prev_b: List[NegotiationProposal] = []
     last_val: Dict[Tuple[int, str], str] = {}
 
+    def _is_conflict_resolved(c: ConflictEntry) -> bool:
+        """conflict가 현재 cur_a/cur_b 상태 기준으로 실제 해결됐는지 판단."""
+        all_cur = {s["step_id"]: s for s in cur_a + cur_b}
+        ct = str(c.conflict_type)
+
+        if "DEPENDENCY" in ct:
+            # PASS step에 대응하는 receive deps가 생겼으면 resolved
+            for sid in c.step_ids:
+                ps = all_cur.get(sid)
+                if ps and ps.get("handoff_type") == "PASS":
+                    target = ps.get("target_agent")
+                    target_plan = cur_b if target == "agent_B" else cur_a
+                    if any(sid in s.get("depends_on", []) for s in target_plan):
+                        return True
+                    # 완화: target에 PASS 이후 시간의 step이 있으면 OK
+                    if any(s["time_min"] > ps["time_min"] for s in target_plan):
+                        return True
+            return False
+
+        # REDUNDANCY / CANNOT_DO: 해당 step_ids 중 하나라도 삭제됐으면 resolved
+        if "REDUNDANCY" in ct or "CANNOT" in ct:
+            return any(sid not in all_cur for sid in c.step_ids)
+
+        # TEMPORAL: 해당 step들의 time_min이 달라졌으면 resolved
+        if "TEMPORAL" in ct and len(c.step_ids) >= 2:
+            times = [all_cur[sid]["time_min"] for sid in c.step_ids if sid in all_cur]
+            return len(set(times)) == len(times)   # 모두 다른 시간이면 OK
+
+        # 기본: step_ids가 모두 locked이거나 삭제됨
+        return all(sid in locked or sid not in all_cur for sid in c.step_ids)
+
     for rnd in range(1, MAX_NEGOTIATION_ROUNDS + 1):
-        remaining = [c for c in conflicts
-                     if not c.step_ids or not all(s in locked for s in c.step_ids)]
+        remaining = [c for c in conflicts if not _is_conflict_resolved(c)]
         if not remaining:
-            print(f"\n  Round {rnd}: all resolved early.")
+            print(f"\n  Round {rnd}: all conflicts resolved early.")
             break
 
         print(f"\n  -- Round {rnd}/{MAX_NEGOTIATION_ROUNDS} "
@@ -1189,6 +1238,10 @@ def phase4_negotiation(
         def _filter(props: List[NegotiationProposal]) -> List[NegotiationProposal]:
             out = []
             for p in props:
+                # ACCEPT는 절대 필터링하지 않음 — lock 조건에 필수
+                if "ACCEPT" in p.reason.upper():
+                    out.append(p)
+                    continue
                 key = (p.step_id, p.field)
                 if last_val.get(key) == p.new_value:
                     continue
@@ -1293,8 +1346,14 @@ def phase5_convergence_check(
 
     no_missing = len(truly_unmatched) == 0
 
-    unresolved = [c for c in conflicts
-                  if c.conflict_type in (ConflictType.REDUNDANCY, ConflictType.CANNOT_DO)]
+    # 실제로 cur plan에 step이 남아있는 conflict만 unresolved로 집계
+    # (negotiation에서 삭제된 step의 conflict는 자동 해결된 것으로 간주)
+    all_remaining_ids = {s["step_id"] for s in steps_a + steps_b}
+    unresolved = [
+        c for c in conflicts
+        if c.conflict_type in (ConflictType.REDUNDANCY, ConflictType.CANNOT_DO)
+        and any(sid in all_remaining_ids for sid in c.step_ids)
+    ]
     converged  = no_cycle and obs_ok and no_missing
 
     print(f"  No dep cycle   : {'OK' if no_cycle else 'FAIL'}")
@@ -1605,3 +1664,193 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     lines.append(SEP)
 
     return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPATIBILITY WRAPPERS — p2p_main.py 인터페이스 맞춤
+# ══════════════════════════════════════════════════════════════════════════════
+
+from concurrent.futures import ThreadPoolExecutor as _TPE
+
+
+def observe_and_draft(
+    img_a: str, img_b: str, task: str,
+    verbose: str = "full",
+):
+    """
+    OBSERVATION 단계: Phase1(offer) + Phase2 draft plan을 한 번에 수행.
+    반환: (offer_a, offer_b, draft_a, draft_b)
+    """
+    offer_a, offer_b = phase1_offer(img_a, img_b, task, verbose=verbose)
+
+    _banner("OBSERVATION — DRAFT PLAN")
+    prompt_a = _build_phase2_prompt(offer_a, offer_b, task, use_offer=True)
+    prompt_b = _build_phase2_prompt(offer_b, offer_a, task, use_offer=True)
+
+    with _TPE(max_workers=2) as ex:
+        fut_a = ex.submit(run_vlm, img_a, prompt_a, True)
+        fut_b = ex.submit(run_vlm, img_b, prompt_b, True)
+        raw_a, logp_a = fut_a.result()
+        raw_b, logp_b = fut_b.result()
+
+    if verbose == "full":
+        _log("A DRAFT RAW", raw_a)
+        _log("B DRAFT RAW", raw_b)
+
+    draft_a = _parse_local_plan(raw_a, logp_a, offer_a, step_offset=0)
+    draft_b = _parse_local_plan(raw_b, logp_b, offer_b, step_offset=AGENT_B_STEP_OFFSET)
+
+    if verbose in ("full", "summary"):
+        _log("DRAFT PLAN A", jdump(local_plan_to_dict(draft_a)))
+        _log("DRAFT PLAN B", jdump(local_plan_to_dict(draft_b)))
+
+    return offer_a, offer_b, draft_a, draft_b
+
+
+def coordinate(
+    offer_a: "Offer", offer_b: "Offer",
+    draft_a: "LocalPlan", draft_b: "LocalPlan",
+    img_a: str, img_b: str, task: str,
+    use_offer: bool = True,
+    verbose: str = "full",
+):
+    """
+    COORDINATION 단계: draft를 보고 상호인식 최종 plan 생성 + PASS 동기화.
+    반환: (plan_a, plan_b)  ← LocalPlan 객체
+    """
+    _banner("COORDINATION — MUTUAL AWARENESS PLAN")
+
+    draft_a_json = jdump(plan_steps_to_dicts(draft_a.steps))
+    draft_b_json = jdump(plan_steps_to_dicts(draft_b.steps))
+
+    def _build_coord_prompt(my: "Offer", other: "Offer",
+                            my_draft: str, other_draft: str) -> str:
+        passable = [p for p in my.can_provide if _is_passable(p)]
+        return f"""You are the {my.room_type} agent ({my.agent_id}).
+Global task: "{task}"
+
+YOUR DRAFT PLAN (improve this):
+{my_draft}
+
+OTHER AGENT ({other.room_type}, {other.agent_id}) DRAFT PLAN:
+{other_draft}
+
+YOUR OFFER:
+- can_provide: {json.dumps(passable, ensure_ascii=False)}
+- need_from_other: {json.dumps(my.need_from_other, ensure_ascii=False)}
+
+{_P2_HANDOFF_RULES}
+
+Produce your FINAL local plan. Refine your draft considering:
+1. What the other agent is doing (avoid redundancy).
+2. Your can_provide list — add a PASS step if needed.
+3. Your need_from_other — ensure a receive/use step if the other agent provides it.
+4. Generate 4–6 steps. Return ONLY valid JSON inside <JSON> tags.
+
+<JSON>
+{{
+  "plan_steps": [
+    {{"step_id":1,"time_min":0,"action":"verb + specific object",
+      "preconditions":[],"depends_on":[],"handoff_type":null,
+      "target_agent":null,"uncertainty":0.1,"notes":""}}
+  ]
+}}
+</JSON>"""
+
+    prompt_a = _build_coord_prompt(offer_a, offer_b, draft_a_json, draft_b_json)
+    prompt_b = _build_coord_prompt(offer_b, offer_a, draft_b_json, draft_a_json)
+
+    with _TPE(max_workers=2) as ex:
+        fut_a = ex.submit(run_vlm, img_a, prompt_a, True)
+        fut_b = ex.submit(run_vlm, img_b, prompt_b, True)
+        raw_a, logp_a = fut_a.result()
+        raw_b, logp_b = fut_b.result()
+
+    if verbose == "full":
+        _log("A COORD RAW", raw_a)
+        _log("B COORD RAW", raw_b)
+
+    plan_a = _parse_local_plan(raw_a, logp_a, offer_a, step_offset=0)
+    plan_b = _parse_local_plan(raw_b, logp_b, offer_b, step_offset=AGENT_B_STEP_OFFSET)
+
+    if use_offer:
+        _banner("HANDOFF SYNC — PASS COORDINATION")
+        plan_a, plan_b = _ensure_pass(plan_a, plan_b, offer_a, offer_b)
+
+    if verbose in ("full", "summary"):
+        _log("COORD PLAN A", jdump(local_plan_to_dict(plan_a)))
+        _log("COORD PLAN B", jdump(local_plan_to_dict(plan_b)))
+
+    pass_a = sum(1 for s in plan_a.steps if s.handoff_type == "PASS")
+    pass_b = sum(1 for s in plan_b.steps if s.handoff_type == "PASS")
+    print(f"\n  A: steps={len(plan_a.steps)} U={plan_a.U_plan:.3f} PASS={pass_a}")
+    print(f"  B: steps={len(plan_b.steps)} U={plan_b.U_plan:.3f} PASS={pass_b}")
+
+    return plan_a, plan_b
+
+
+# ── phase6_human_query 시그니처 어댑터 ────────────────────────────────────────
+# p2p_main.py: phase6_human_query(plan_a, plan_b, offer_a, offer_b,
+#                                  img_a, img_b, task=task,
+#                                  use_human_query=...,
+#                                  unresolved_conflicts=...)
+# 원본:        phase6_human_query(plan_a, plan_b, offer_a, offer_b,
+#                                  convergence, img_a, img_b,
+#                                  use_human_query=True)
+
+_phase6_original = phase6_human_query
+
+
+def phase6_human_query(
+    plan_a, plan_b, offer_a, offer_b,
+    convergence=None,
+    img_a: str = "",
+    img_b: str = "",
+    use_human_query: bool = True,
+    task: str = "",
+    unresolved_conflicts=None,
+):
+    if convergence is None:
+        from p2p_models import ConvergenceResult
+        convergence = ConvergenceResult(
+            converged=not unresolved_conflicts,
+            no_dep_cycle=True,
+            observability_ok=True,
+            no_missing_deps=not unresolved_conflicts,
+            unresolved_conflicts=unresolved_conflicts or [],
+        )
+    return _phase6_original(
+        plan_a, plan_b, offer_a, offer_b,
+        convergence, img_a, img_b,
+        use_human_query=use_human_query,
+    )
+
+
+# ── phase_finalize 시그니처 어댑터 ────────────────────────────────────────────
+# p2p_main.py: phase_finalize(steps_a, steps_b, offer_a, offer_b,
+#                              human_answers, verbose=verbose)  ← convergence 없음
+# 원본:        phase_finalize(steps_a, steps_b, offer_a, offer_b,
+#                              human_answers, convergence, verbose="full")
+
+_phase_finalize_original = phase_finalize
+
+
+def phase_finalize(
+    steps_a, steps_b, offer_a, offer_b,
+    human_answers,
+    convergence=None,
+    verbose: str = "full",
+):
+    if convergence is None:
+        from p2p_models import ConvergenceResult
+        convergence = ConvergenceResult(
+            converged=True,
+            no_dep_cycle=True,
+            observability_ok=True,
+            no_missing_deps=True,
+            unresolved_conflicts=[],
+        )
+    return _phase_finalize_original(
+        steps_a, steps_b, offer_a, offer_b,
+        human_answers, convergence, verbose,
+    )
