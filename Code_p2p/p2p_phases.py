@@ -472,7 +472,6 @@ def _normalize_pass(steps: List[PlanStep]) -> List[PlanStep]:
             s.handoff_type = None; s.target_agent = None; continue
 
         if not s.depends_on:
-            # 제거 전에 직전 non-PASS step을 depends_on으로 자동 연결
             prev_steps = [p for p in steps if p.step_id < s.step_id and not p.handoff_type]
             if prev_steps:
                 s.depends_on = [max(prev_steps, key=lambda p: p.step_id).step_id]
@@ -488,8 +487,17 @@ def _normalize_pass(steps: List[PlanStep]) -> List[PlanStep]:
         # cross-agent deps 제거
         s.depends_on = [d for d in s.depends_on if d in my_ids]
 
-        # 중복 PASS 제거
-        if any(_fuzzy_match(s.action, prev.action, min_overlap=3) for prev in seen_pass):
+        # 중복 PASS 제거 — 단, 전달 물건(payload) 키워드가 다르면 중복 아님
+        def _pass_payload(action: str) -> Set[str]:
+            # carry/bring X to ... 에서 X 부분의 키워드 추출
+            m = re.search(r"(?:carry|bring|deliver|transport)\s+(.+?)\s+(?:to|for)", action, re.I)
+            return _kw(m.group(1)) if m else _kw(action)
+        s_payload = _pass_payload(s.action)
+        if any(
+            _fuzzy_match(s.action, prev.action, min_overlap=3)
+            and not (s_payload - _pass_payload(prev.action))  # payload 키워드가 완전히 포함되면 중복
+            for prev in seen_pass
+        ):
             print(f"  [NORM] step{s.step_id} PASS removed: duplicate")
             s.handoff_type = None; s.target_agent = None; continue
 
@@ -834,7 +842,12 @@ def detect_conflicts(
 
             # 객체 수준에서 실제로 겹치는지 확인 (min_overlap=3, 동사 제거 후)
             overlap = kw_a & kw_b
-            if len(overlap) >= 3:
+            # 동사가 다른 경우(prep vs carry 등)는 중복으로 보지 않음
+            verb_a = sa.action.lower().split()[0] if sa.action.strip() else ""
+            verb_b = sb.action.lower().split()[0] if sb.action.strip() else ""
+            if verb_a != verb_b and {verb_a, verb_b} & {"carry","bring","pour","brew","slice","arrange","prepare"}:
+                continue
+            if len(overlap) >= 4:
                 conflicts.append(ConflictEntry(
                     conflict_type = ConflictType.REDUNDANCY,
                     step_ids      = [sa.step_id, sb.step_id],
@@ -856,8 +869,12 @@ def detect_conflicts(
                     continue
                 kw_i = _kw(si.action) - _COMMON_VERBS
                 kw_j = _kw(sj.action) - _COMMON_VERBS
-                # 동사 제거 후 객체 수준 3개 이상 겹침
-                if len(kw_i & kw_j) >= 3:
+                # 동사 제거 후 객체 수준 4개 이상 겹침 (오탐 방지)
+                verb_i = si.action.lower().split()[0] if si.action.strip() else ""
+                verb_j = sj.action.lower().split()[0] if sj.action.strip() else ""
+                if verb_i != verb_j:
+                    continue
+                if len(kw_i & kw_j) >= 4:
                     conflicts.append(ConflictEntry(
                         conflict_type = ConflictType.REDUNDANCY,
                         step_ids      = [si.step_id, sj.step_id],
@@ -1140,14 +1157,11 @@ def _lock_steps(
     props_b: List[NegotiationProposal],
     conflict_sids: Set[int], existing: Set[int],
 ) -> Set[int]:
-    # ACCEPT는 부분 문자열 매칭 (LLM이 "ACCEPT: ..." 식으로 반환해도 인식)
     acc_b  = {p.step_id for p in props_b if "ACCEPT" in p.reason.upper()}
     acc_a  = {p.step_id for p in props_a if "ACCEPT" in p.reason.upper()}
     prop_a = {p.step_id for p in props_a if "ACCEPT" not in p.reason.upper()}
     prop_b = {p.step_id for p in props_b if "ACCEPT" not in p.reason.upper()}
-    # 양측 명시적 합의
     agreed = (prop_a & acc_b) | (prop_b & acc_a)
-    # 상대가 같은 step을 counter-propose하지 않으면 uncontested → lock
     uncontested_a = prop_a - prop_b
     uncontested_b = prop_b - prop_a
     return existing | agreed | uncontested_a | uncontested_b
@@ -1178,10 +1192,8 @@ def phase4_negotiation(
     last_val: Dict[Tuple[int, str], str] = {}
 
     def _is_conflict_resolved(c: ConflictEntry) -> bool:
-        """현재 cur_a/cur_b 상태 기준으로 conflict가 실제 해결됐는지 판단."""
         all_cur = {s["step_id"]: s for s in cur_a + cur_b}
         ct = str(c.conflict_type)
-
         if "DEPENDENCY" in ct:
             for sid in c.step_ids:
                 ps = all_cur.get(sid)
@@ -1193,15 +1205,11 @@ def phase4_negotiation(
                     if any(s["time_min"] > ps["time_min"] for s in target_plan):
                         return True
             return False
-
         if "REDUNDANCY" in ct or "CANNOT" in ct:
-            # 해당 step_ids 중 하나라도 삭제됐으면 resolved
             return any(sid not in all_cur for sid in c.step_ids)
-
         if "TEMPORAL" in ct and len(c.step_ids) >= 2:
             times = [all_cur[sid]["time_min"] for sid in c.step_ids if sid in all_cur]
             return len(set(times)) == len(times)
-
         return all(sid in locked or sid not in all_cur for sid in c.step_ids)
 
     for rnd in range(1, MAX_NEGOTIATION_ROUNDS + 1):
@@ -1228,10 +1236,8 @@ def phase4_negotiation(
         def _filter(props: List[NegotiationProposal]) -> List[NegotiationProposal]:
             out = []
             for p in props:
-                # ACCEPT는 절대 필터링하지 않음 — lock 조건에 필수
                 if "ACCEPT" in p.reason.upper():
-                    out.append(p)
-                    continue
+                    out.append(p); continue
                 key = (p.step_id, p.field)
                 if last_val.get(key) == p.new_value:
                     continue
@@ -1306,9 +1312,14 @@ def phase5_convergence_check(
 
     pool_a = _obs_pool(offer_a)
     pool_b = _obs_pool(offer_b)
+    _OBS_SKIP_VERBS = {"receive", "accept", "get", "take", "pick", "notify", "inform"}
     obs_ok = True
     for s in all_steps:
-        if s.get("handoff_type") == "PASS":
+        if s.get("handoff_type") in ("PASS", "INFORM"):
+            continue
+        # receive 동사 step은 다른 방 물건을 받는 것 → obs_scope 밖이어도 정상
+        first_word = s.get("action", "").lower().split()[0] if s.get("action", "").strip() else ""
+        if first_word in _OBS_SKIP_VERBS:
             continue
         pool = pool_a if s.get("agent_id") == "agent_A" else pool_b
         kw   = _kw(s.get("action", ""))
@@ -1336,13 +1347,11 @@ def phase5_convergence_check(
 
     no_missing = len(truly_unmatched) == 0
 
-    # 실제로 cur plan에 step이 남아있는 conflict만 unresolved로 집계
-    # (협상으로 이미 삭제된 step의 conflict는 해결된 것으로 간주)
     all_remaining_ids = {s["step_id"] for s in steps_a + steps_b}
     unresolved = [
         c for c in conflicts
         if c.conflict_type in (ConflictType.REDUNDANCY, ConflictType.CANNOT_DO)
-        and any(sid in all_remaining_ids for sid in c.step_ids)
+        and all(sid in all_remaining_ids for sid in c.step_ids)  # 양쪽 모두 남아있을 때만
     ]
     converged  = no_cycle and obs_ok and no_missing
 
@@ -1551,13 +1560,11 @@ def phase_finalize(
 
 def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     """
-    Joint plan을 자연어 줄글 형식으로 출력.
-    타임라인 순으로 각 스텝을 설명하고, PASS/INFORM은 명시적으로 표시.
+    Joint plan을 번호 목록 형식으로 출력.
+    시간순 정렬, PASS는 [PASS→], INFORM은 [NOTIFY→], receive step은 [←RECV] 표시.
     """
     if not plan:
         return "  (empty)"
-
-    id_to_step: Dict[int, Dict] = {s["step_id"]: s for s in plan}
 
     steps_a = [s for s in plan if s.get("agent_id") == "agent_A"]
     steps_b = [s for s in plan if s.get("agent_id") == "agent_B"]
@@ -1568,91 +1575,51 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     n_inform = sum(1 for s in plan if s.get("handoff_type") == "INFORM")
     max_t    = max((s.get("time_min", 0) for s in plan), default=0)
 
-    SEP  = "━" * 68
-    SEP2 = "─" * 68
+    SEP = "━" * 68
 
-    def _dep_note(s: Dict) -> str:
-        deps = s.get("depends_on", [])
-        if not deps:
-            return ""
-        cross = [id_to_step[d] for d in deps
-                 if d in id_to_step and id_to_step[d].get("agent_id") != s.get("agent_id")]
-        if cross:
-            acts = ", ".join(f'"{x["action"][:35]}…"' if len(x["action"]) > 35
-                             else f'"{x["action"]}"' for x in cross[:2])
-            return f"\n       (waits for: {acts})"
-        return ""
+    # 시간 → agent_id 순 정렬
+    sorted_plan = sorted(plan, key=lambda s: (s.get("time_min", 0), s.get("agent_id", "")))
+
+    # PASS step_id 집합 (receive step 판별용)
+    pass_sids = {s["step_id"] for s in plan if s.get("handoff_type") == "PASS"}
+    _RECV_VERBS = {"receive", "accept", "pick", "collect", "get", "take"}
+
+    def _is_recv(s: Dict) -> bool:
+        first = s.get("action", "").lower().split()[0] if s.get("action", "").strip() else ""
+        return first in _RECV_VERBS or any(d in pass_sids for d in s.get("depends_on", []))
 
     lines: List[str] = []
     lines.append(SEP)
-    task_str = task[:60] + "…" if len(task) > 60 else task
+    task_str = task[:65] + "…" if len(task) > 65 else task
     if task_str:
-        lines.append(f'  "{task_str}"')
+        lines.append(f'  Task : "{task_str}"')
     lines.append(
-        f"  {room_a.upper()} (agent_A) + {room_b.upper()} (agent_B)  |  "
-        f"{len(plan)} steps  |  {n_pass} handoff  |  {n_inform} notify  |  ~{max_t} min"
+        f"  {room_a.upper()} (agent_A)  +  {room_b.upper()} (agent_B)"
+        f"  |  {len(plan)} steps  |  {n_pass} handoff  |  {n_inform} notify  |  ~{max_t} min"
     )
     lines.append(SEP)
     lines.append("")
 
-    # 타임라인 순서로 출력
-    all_times = sorted({s.get("time_min", 0) for s in plan})
+    for i, s in enumerate(sorted_plan, start=1):
+        room   = s.get("room", "?")
+        action = s.get("action", "")
+        ht     = s.get("handoff_type")
 
-    for t in all_times:
-        slot = sorted(
-            [s for s in plan if s.get("time_min") == t],
-            key=lambda s: s.get("agent_id", "")
-        )
-        lines.append(f"  T = {t:>2} min")
-        lines.append(f"  {SEP2[:50]}")
-
-        for s in slot:
-            agent  = s.get("agent_id", "?")
-            room   = s.get("room", "?")
-            action = s.get("action", "")
-            ht     = s.get("handoff_type")
-            tgt    = s.get("target_agent", "")
-
-            # 핸드오프 표시
-            if ht == "PASS":
-                marker = f"  ──► PASS to {tgt}"
-            elif ht == "INFORM":
-                marker = f"  ~~► NOTIFY {tgt}"
-            else:
-                marker = ""
-
-            dep_note = _dep_note(s)
-            lines.append(f"  [{room}] {action}{marker}{dep_note}")
-
-        lines.append("")
-
-    # COORDINATION SUMMARY
-    coord = []
-    for s in sorted(plan, key=lambda x: x.get("time_min", 0)):
-        ht  = s.get("handoff_type")
-        if not ht:
-            continue
-        src = s.get("agent_id", "?")
-        tgt = s.get("target_agent", "?")
-        t   = s.get("time_min", 0)
-        act = s.get("action", "")
-        if len(act) > 50:
-            act = act[:50] + "…"
-        receivers = [r for r in plan
-                     if s["step_id"] in r.get("depends_on", [])
-                     and r.get("agent_id") != src]
         if ht == "PASS":
-            recv_t = receivers[0].get("time_min", t+1) if receivers else t+1
-            coord.append(f"  {src} ──[PASS]──► {tgt}  |  '{act}'  (T={t}m → T={recv_t}m)")
+            tgt    = s.get("target_agent", "")
+            marker = f"[PASS→] "
         elif ht == "INFORM":
-            coord.append(f"  {src} ~~[NOTIFY]~~► {tgt}  |  '{act}'  (T={t}m)")
+            tgt    = s.get("target_agent", "")
+            marker = f"[NOTIFY→] "
+        elif _is_recv(s):
+            marker = "[←RECV] "
+        else:
+            marker = ""
 
-    if coord:
-        lines.append(SEP2)
-        lines.append("  COORDINATION")
-        lines.extend(coord)
+        lines.append(f"  {i}. [{room}] {marker}{action}")
+
+    lines.append("")
     lines.append(SEP)
-
     return "\n".join(lines)
 
 
@@ -1772,44 +1739,29 @@ Produce your FINAL local plan. Refine your draft considering:
     return plan_a, plan_b
 
 
-# ── phase6_human_query 시그니처 어댑터 ────────────────────────────────────────
-# p2p_main.py 호출 순서:
-#   phase6_human_query(plan_a, plan_b, offer_a, offer_b,
-#                      img_a, img_b,                   ← 5·6번째 위치
-#                      task=task,
-#                      use_human_query=...,
-#                      unresolved_conflicts=...)
-#
-# 원본 시그니처:
-#   phase6_human_query(plan_a, plan_b, offer_a, offer_b,
-#                      convergence,                    ← 5번째 위치
-#                      img_a, img_b, use_human_query)
+# ── phase6_human_query 어댑터 ─────────────────────────────────────────────────
+# p2p_main.py: (plan_a, plan_b, offer_a, offer_b, img_a, img_b, task=, use_human_query=, unresolved_conflicts=)
+# 원본:        (plan_a, plan_b, offer_a, offer_b, convergence, img_a, img_b, use_human_query=)
 
 _phase6_original = phase6_human_query
 
 
 def phase6_human_query(
     plan_a, plan_b, offer_a, offer_b,
-    # 5번째·6번째를 img_a/img_b 로 받아 p2p_main.py 호출 순서와 일치
-    img_a: str = "",
-    img_b: str = "",
+    img_a: str = "",          # p2p_main: 5번째 = img_a
+    img_b: str = "",          # p2p_main: 6번째 = img_b
     use_human_query: bool = True,
     task: str = "",
     unresolved_conflicts=None,
-    # 원본 시그니처로 직접 호출될 때를 위한 fallback
     convergence=None,
 ):
-    """p2p_main.py(img_a/img_b가 5·6번째) + 원본(convergence가 5번째) 모두 수용."""
-    # img_a 자리에 ConvergenceResult가 들어온 경우(원본 직접 호출) 감지
+    # img_a 자리에 ConvergenceResult가 들어온 경우 (원본 직접 호출)
     if hasattr(img_a, "converged"):
-        # 원본 호출: phase6_human_query(plan_a, plan_b, offer_a, offer_b,
-        #                               convergence_obj, img_a_str, img_b_str, ...)
-        convergence = img_a
-        img_a       = img_b
-        img_b       = use_human_query if isinstance(use_human_query, str) else ""
+        convergence     = img_a
+        img_a           = img_b
+        img_b           = use_human_query if isinstance(use_human_query, str) else ""
         use_human_query = True
     else:
-        # p2p_main.py 호출: convergence를 unresolved_conflicts로부터 재구성
         if convergence is None:
             from p2p_models import ConvergenceResult
             convergence = ConvergenceResult(
@@ -1819,7 +1771,6 @@ def phase6_human_query(
                 no_missing_deps      = not unresolved_conflicts,
                 unresolved_conflicts = unresolved_conflicts or [],
             )
-
     return _phase6_original(
         plan_a, plan_b, offer_a, offer_b,
         convergence, img_a, img_b,
@@ -1827,11 +1778,8 @@ def phase6_human_query(
     )
 
 
-# ── phase_finalize 시그니처 어댑터 ────────────────────────────────────────────
-# p2p_main.py: phase_finalize(steps_a, steps_b, offer_a, offer_b,
-#                              human_answers, verbose=verbose)  ← convergence 없음
-# 원본:        phase_finalize(steps_a, steps_b, offer_a, offer_b,
-#                              human_answers, convergence, verbose)
+# ── phase_finalize 어댑터 ─────────────────────────────────────────────────────
+# p2p_main.py: convergence 인자 없음
 
 _phase_finalize_original = phase_finalize
 
