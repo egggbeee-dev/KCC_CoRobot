@@ -28,7 +28,8 @@
         "Prepared ingredients for warm drinks available in the environment",
         "Checked for easily digestible food ingredients",
         "Prepared a cup",
-        "Set up food to be brought to the bedroom"
+        "Carried the warm drinks to the bedroom doorway",
+        "Carried the warm food to the bedroom doorway"
       ],
       "bedroom": [
         "Made the bed for comfort",
@@ -95,6 +96,7 @@
         "Placed the laptop on the desk",
         "Secured a comfortable chair for long-term work",
         "Received the coffee from the kitchen",
+        "Received food from the kitchen",
         "Placed coffee on the desk"
       ],
       "kitchen": [
