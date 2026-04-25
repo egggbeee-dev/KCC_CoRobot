@@ -638,23 +638,45 @@ def _ensure_pass(
         }
         _PLACE = {"place","put","lay","bring","serve","deliver","receive","arrange"}
 
-        # 1단계: keyword 직접 겹침
+        # 수령/배치 관련 동사만 target 후보로 — close/adjust 등 무관한 step 제외
+        _LINK_RECV_VERBS = {"receive","accept","collect","get","take","pick",
+                            "place","put","set","arrange","bring","use","set up"}
+        def _is_recv_candidate(s: PlanStep) -> bool:
+            first = s.action.lower().split()[0] if s.action.strip() else ""
+            return first in _LINK_RECV_VERBS
+
+        # 1단계: keyword 직접 겹침 + 수령 관련 동사
         targets = [s for s in receiver.steps
-                   if not s.handoff_type and pkw & _kw(s.action)]
+                   if not s.handoff_type
+                   and pkw & _kw(s.action)
+                   and _is_recv_candidate(s)]
+
+        # 1.5단계: keyword 강하게 겹침 + 수령 관련 동사 (동사 무관하면 오탐)
+        if not targets:
+            targets = [s for s in receiver.steps
+                       if not s.handoff_type
+                       and len(pkw & _kw(s.action)) >= 2
+                       and _is_recv_candidate(s)]
 
         # 2단계: food item + 배치 동사
         if not targets and pkw & _FOOD_KW_LOCAL:
             targets = [s for s in receiver.steps
                        if not s.handoff_type
-                       and set(re.findall(r"\w+", s.action.lower())) & _PLACE
+                       and _is_recv_candidate(s)
                        and _kw(s.action) & _FOOD_KW_LOCAL]
 
-        # 3단계: need_from_other fuzzy match
+        # 3단계: need_from_other와 keyword 실질 겹침 (min 2개) + 수령 동사
+        # fuzzy_match_soft 단독은 범용 need("workspace setup")에서 오탐 위험
         if not targets:
-            targets = [s for s in receiver.steps
-                       if not s.handoff_type
-                       and any(_fuzzy_match_soft(s.action, n)
-                               for n in r_offer.need_from_other)]
+            for need in r_offer.need_from_other:
+                need_kw = _kw(need)
+                matched = [s for s in receiver.steps
+                           if not s.handoff_type
+                           and _is_recv_candidate(s)
+                           and len(need_kw & _kw(s.action)) >= 2]
+                if matched:
+                    targets = matched
+                    break
 
         # receiver step이 없으면 자동 추가
         if not targets:
@@ -995,6 +1017,24 @@ def detect_conflicts(
                     expanded |= {t for s in syn_set for t in s.split()}
         return expanded
 
+    def _build_detect_obs_pool(offer: Offer) -> Set[str]:
+        scope_kw = set(re.findall(r"\w+", offer.obs_scope.lower()))
+        can_kw: Set[str] = set()
+        for cd in offer.can_do:
+            can_kw |= _kw(cd)
+        for cd in offer.conf:
+            can_kw |= _kw(cd)
+        _BEV_D  = {"beverage","drink","drinks","coffee","tea","juice",
+                   "water","cup","glass","mug","bottle","carafe","flask"}
+        _FOOD_D = {"snack","food","fruit","bread","plate","tray","bowl",
+                   "meal","cookie","nut","snacks"}
+        cdt = " ".join(offer.can_do).lower()
+        if any(w in cdt for w in {"drink","beverage","water","coffee","tea","juice"}):
+            can_kw |= _BEV_D
+        if any(w in cdt for w in {"snack","food","fruit","bread","prepare","serve"}):
+            can_kw |= _FOOD_D
+        return _expand_pool(scope_kw | can_kw)
+
     _OBS_SKIP_VERBS = {"receive","accept","notify","inform","wait","pick","take","get","collect"}
     for step, offer in all_steps:
         if step.handoff_type in ("PASS", "INFORM"):
@@ -1004,12 +1044,7 @@ def detect_conflicts(
             continue
         if step.action.lower().startswith(("auto-added", "carry")):
             continue
-        scope_kw = set(re.findall(r"\w+", offer.obs_scope.lower()))
-        can_kw: Set[str] = set()
-        for cd in offer.can_do:
-            can_kw |= _kw(cd)
-        # 동의어 포함 확장 pool
-        pool   = _expand_pool(scope_kw | can_kw)
+        pool   = _build_detect_obs_pool(offer)
         act_kw = _kw(step.action)
         if act_kw and pool and not (act_kw & pool):
             conflicts.append(ConflictEntry(
@@ -1396,17 +1431,55 @@ def phase5_convergence_check(
     no_cycle = not _has_cycle(all_steps)
 
     # observability
+    _DERIVED_OBS: Dict[str, Set[str]] = {
+        "water":    {"water","drink","beverage","glass","cup","bottle"},
+        "drink":    {"drink","beverage","cup","glass","water","bottle"},
+        "beverage": {"beverage","drink","cup","glass","water","bottle"},
+        "coffee":   {"coffee","cup","mug","drink","beverage"},
+        "tea":      {"tea","cup","mug","drink","beverage"},
+        "kettle":   {"kettle","water","drink","beverage","cup"},
+        "snack":    {"snack","plate","tray","food","fruit","bread"},
+        "food":     {"food","snack","plate","tray","meal","fruit"},
+        "fruit":    {"fruit","snack","plate","tray","food"},
+        "bread":    {"bread","snack","plate","tray","food"},
+        "tray":     {"tray","plate","bowl","snack","food","drink"},
+        "refrigerator": {"refrigerator","drink","beverage","water","food","snack"},
+        "stove":    {"stove","pot","pan","water","food"},
+        "sink":     {"sink","water","glass","cup","beverage"},
+        "counter":  {"counter","countertop","countertops","tray","plate","snack"},
+        "countertop":{"counter","countertop","countertops","tray","plate","snack"},
+        "cabinet":  {"cabinet","plate","bowl","cup","glass","tray"},
+    }
+
     def _obs_pool(offer: Offer) -> Set[str]:
-        pool = set(re.findall(r"\w+", offer.obs_scope.lower()))
+        # obs_scope 키워드
+        scope_kw = set(re.findall(r"\w+", offer.obs_scope.lower()))
+        # obs_scope 기반 파생만 확장 (can_do 기반 파생은 과도한 완화 방지)
+        derived: Set[str] = set()
+        for w in scope_kw:
+            if w in _DERIVED_OBS:
+                derived |= _DERIVED_OBS[w]
+        # can_do 행동 키워드는 파생 없이 직접 추가
+        can_do_kw: Set[str] = set()
         for cd in offer.can_do:
-            pool |= _kw(cd)
-        return pool
+            can_do_kw |= _kw(cd)
+        return scope_kw | derived | can_do_kw
 
     pool_a = _obs_pool(offer_a)
     pool_b = _obs_pool(offer_b)
+    _P5_OBS_SKIP = {
+        "receive","accept","notify","inform","wait",
+        "pick","take","get","collect","gather",
+    }
     obs_ok = True
     for s in all_steps:
-        if s.get("handoff_type") == "PASS":
+        if s.get("handoff_type") in ("PASS", "INFORM"):
+            continue
+        # auto-added receive step은 obs 체크 제외
+        if "auto-added" in s.get("notes","").lower():
+            continue
+        fw = s.get("action","").lower().split()[0] if s.get("action","").strip() else ""
+        if fw in _P5_OBS_SKIP:
             continue
         pool = pool_a if s.get("agent_id") == "agent_A" else pool_b
         kw   = _kw(s.get("action", ""))
@@ -1940,23 +2013,37 @@ def format_joint_plan(plan: List[Dict], task: str = "") -> str:
     n_inform = sum(1 for s in plan if s.get("handoff_type") == "INFORM")
     max_t    = max((s.get("time_min", 0) for s in plan), default=0)
     SEP = "━" * 68
-    pass_sids   = {s["step_id"] for s in plan if s.get("handoff_type") == "PASS"}
-    # RECV 판단: depends_on에 PASS step이 있거나, 명확한 수령 동사 + 공간 키워드
-    _RECV_VERBS = {"receive","accept","collect"}
-    _RECV_CONTEXT = {"doorway","pickup","handover","handoff","from agent","from kitchen",
-                     "from bedroom","from living","from other","tray from","items from"}
+    pass_sids = {s["step_id"] for s in plan if s.get("handoff_type") == "PASS"}
+    # 명확한 수령 동사 — 무조건 RECV
+    _EXPLICIT_RECV = {"receive", "accept"}
+    # 문맥 의존 수령 동사 — from agent/doorway 등 수령 문맥 있을 때만 RECV
+    _CTX_RECV = {"pick", "get", "take", "collect", "gather"}
+    # 절대 RECV 아닌 동사 — depends_on에 PASS가 있어도 제외
+    _NEVER_RECV = {
+        "close", "open", "adjust", "wipe", "clean", "set", "turn",
+        "arrange", "prepare", "place", "put", "check", "make", "clear",
+        "organize", "unplug", "plug", "remove", "notify", "inform",
+    }
+    _RECV_CTX_KW = {
+        "doorway", "pickup", "handover", "handoff",
+        "from agent", "from kitchen", "from bedroom",
+        "from living", "from other", "agent_a", "agent_b",
+    }
     def _is_recv(s: Dict) -> bool:
-        # 1순위: depends_on에 PASS step이 포함돼 있으면 RECV
-        if any(d in pass_sids for d in s.get("depends_on", [])):
-            return True
         action = s.get("action","").lower()
         first  = action.split()[0] if action.strip() else ""
-        # 2순위: 명확한 수령 동사
-        if first in _RECV_VERBS:
+        # 절대 RECV 아닌 동사 → 무조건 False
+        if first in _NEVER_RECV:
+            return False
+        # 명확 수령 동사 → True
+        if first in _EXPLICIT_RECV:
             return True
-        # 3순위: pick/get/take는 수령 문맥(doorway, from agent 등)이 있을 때만
-        if first in {"pick","get","take"}:
-            return any(ctx in action for ctx in _RECV_CONTEXT)
+        # depends_on에 PASS가 있고 + 수령 문맥 키워드 있으면 True
+        if any(d in pass_sids for d in s.get("depends_on", [])):
+            return first in _CTX_RECV and any(ctx in action for ctx in _RECV_CTX_KW)
+        # depends_on에 PASS 없어도 수령 문맥 키워드 있으면 True
+        if first in _CTX_RECV:
+            return any(ctx in action for ctx in _RECV_CTX_KW)
         return False
     sorted_plan = sorted(plan, key=lambda s: (s.get("time_min", 0), s.get("agent_id", "")))
     lines: List[str] = [SEP]
