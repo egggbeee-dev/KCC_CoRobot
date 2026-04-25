@@ -6,7 +6,8 @@
       "kitchen": [
         "Checked snack ingredients available in the environment",
         "Took out prepared drinks",
-        "Set up cups"
+        "Set up cups",
+        "Carried the prepared snacks and drinks to the living room doorway"
       ],
       "living room": [
         "Removed objects blocking the TV view",
@@ -14,6 +15,7 @@
         "Arranged cushions so people can sit",
         "Dimmed the main lighting",
         "Turned on indirect lighting",
+        "Received the snacks and drinks from the kitchen',
         "Placed snacks around the sofa"
       ]
     }
@@ -31,7 +33,9 @@
       "bedroom": [
         "Made the bed for comfort",
         "Dimmed the lighting",
-        "Tidied the desk"
+        "Tidied the desk",
+        "Received the warm drinks from the kitchen",
+        "Received the food from the kitchen"
       ]
     }
   },
@@ -43,14 +47,17 @@
         "Cleared the table",
         "Identified a comfortable sofa position for sitting",
         "Adjusted lighting to an appropriate brightness for working",
-        "Secured space to place food"
+        "Received the food and drinks from the kitchen",
+        "Placed food on the workspace"
       ],
       "kitchen": [
         "Checked ingredients for meals",
         "Organized snacks for easy access",
         "Organized drinks for easy access",
         "Prepared a cup",
-        "Cleaned the sink to avoid distractions"
+        "Cleaned the sink to avoid distractions",
+        "Carried the prepared food to the living room doorway",
+        "Carried the prepared drinks to the living room doorway"
       ]
     }
   },
@@ -62,14 +69,15 @@
         "Tidied up items",
         "Prepared simple snacks",
         "Prepared simple drinks",
-        "Placed items on a tray to bring to the bedroom",
-        "Placed items in a container to bring to the bedroom"
+        "Placed items on a tray",
+        "Carried the tray to the bedroom doorway"
       ],
       "bedroom": [
         "Made the blanket tidy",
         "Arranged the pillows",
         "Cleared items from the floor to secure activity space",
         "Secured space to place snacks",
+        "Received the tray from the kitchen",
         "Placed snacks in an easily accessible location in the bedroom",
         "Placed drinks in an easily accessible location in the bedroom",
         "Dimmed the lighting"
@@ -86,7 +94,8 @@
         "Placed writing tools on the desk",
         "Placed the laptop on the desk",
         "Secured a comfortable chair for long-term work",
-        "Placed the coffee received from the kitchen on the desk"
+        "Received the coffee from the kitchen",
+        "Placed coffee on the desk"
       ],
       "kitchen": [
         "Prepared easily consumable food",
@@ -94,7 +103,8 @@
         "Prepared water to make coffee",
         "Prepared coffee beans to make coffee",
         "Set up a cup so it is ready to drink immediately",
-        "Organized food for easy access even at night"
+        "Carried the prepared coffee to the bedroom doorway",
+        "Carried the prepared food to the bedroom doorway"
       ]
     }
   },
@@ -106,11 +116,13 @@
       "Pick up a water",
       "Pick up a cup",
       "Pick up easily consumable snacks",
-      "Place the drinks, cup, and snacks on a carrying tray"
+      "Place the drinks, cup, and snacks on a carrying tray",
+      "Carried the snack tray to the living room doorway"
     ],
     "living room": [
       "Move items or obstacles off the floor to clear a workout space",
       "Turn on the main room light to make it bright",
+      "Received the snack tray from the kitchen",
       "Place the snack tray on a nearby table"
       ]
     }
@@ -122,13 +134,15 @@
     "kitchen": [
         "Checked that the stove is completely turned off",
         "Discarded any perishable food if present",
-        "Cleared items from the table"
+        "Cleared items from the table",
+        "Carried the remaining food to the bedroom"
       ],
       "bedroom": [
         "Checked if there is food in the bedroom",
         "Checked if there are drinks in the bedroom",
         "Checked if there is food",
-        "Confirmed no electronics are running"
+        "Confirmed no electronics are running",
+        "Received the food from the kitchen"
       ]
     }
   },
@@ -141,13 +155,16 @@
         "Checked and selected drinks",
         "Prepared cups together",
         "Organized foods on a tray for easy transport",
-        "Organized drinks on a tray for easy transport"
+        "Organized drinks on a tray for easy transport",
+        "Carried the snack tray to the living room doorway"
       ],
       "living room": [
         "Quickly cleared clutter from the table",
         "Secured sofa space for guests to sit",
         "Secured chair space for guests to sit",
         "Tidied up any visible trash or messy items",
+        "Received the snack tray from the kitchen",
+        "placed snacks on the cleared table",
         "Cleared table space to place the tray"
       ]
     }
@@ -175,12 +192,14 @@
       "bedroom": [
         "Checked for contamination at the baby's location",
         "Made the bedding tidy",
-        "Secured a stable space for the baby to lie down"
+        "Secured a stable space for the baby to lie down",
+        "Carried the soiled bedding to the bathroom doorway"
       ],
       "bathroom": [
         "Checked the location of the bathtub to quickly wash the baby",
         "Checked the location of the towels",
-        "Checked the condition of the soap"
+        "Checked the condition of the soap",
+        "Received the soiled bedding and prepared it for washing"
       ]
     }
   }
