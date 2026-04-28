@@ -17,12 +17,18 @@ from __future__ import annotations
 
 import base64
 import os
+import threading
 from typing import List, Tuple
 
 from p2p_config import MAX_NEW_TOKENS
 
 
-_last_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0}
+# ── 토큰 사용량 추적 ──────────────────────────────────────────────────────────
+# _last_usage  : 마지막 단일 호출의 토큰 (하위 호환용)
+# _total_usage : 실험 단위 누적 토큰 (thread-safe, p2p_tracker에서 사용)
+_last_usage:  dict            = {"prompt_tokens": 0, "completion_tokens": 0}
+_usage_lock:  threading.Lock  = threading.Lock()
+_total_usage: dict            = {"prompt_tokens": 0, "completion_tokens": 0}
 
 # ── 백엔드 선택 ───────────────────────────────────────────────────────────────
 VLM_BACKEND = os.environ.get("VLM_BACKEND", "qwen").lower()
@@ -138,11 +144,16 @@ def _run_openai(image_path: str, prompt: str, return_logprobs: bool = False) -> 
         kwargs["logprobs"]     = True
         kwargs["top_logprobs"] = 1
 
-    response = _openai_client.chat.completions.create(**kwargs)  # ← 한 번만
+    response = _openai_client.chat.completions.create(**kwargs)
 
-    # 토큰 기록
+    # 마지막 호출 토큰 기록 (하위 호환)
     _last_usage["prompt_tokens"]     = response.usage.prompt_tokens
     _last_usage["completion_tokens"] = response.usage.completion_tokens
+
+    # 실험 단위 누적 토큰 기록 (thread-safe)
+    with _usage_lock:
+        _total_usage["prompt_tokens"]     += response.usage.prompt_tokens
+        _total_usage["completion_tokens"] += response.usage.completion_tokens
 
     text_out  = response.choices[0].message.content.strip()
     log_probs = []
@@ -150,6 +161,7 @@ def _run_openai(image_path: str, prompt: str, return_logprobs: bool = False) -> 
         log_probs = [t.logprob for t in response.choices[0].logprobs.content]
 
     return text_out, log_probs
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 통합 인터페이스
