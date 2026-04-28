@@ -15,8 +15,8 @@
 #   run_ablation_study(
 #       task_id     = "task_003",
 #       image_pairs = [
-#           ("/content/.../kitchen_11.png", "/content/.../bedroom_1.png"),
-#           ("/content/.../kitchen_08.png", "/content/.../bedroom_3.png"),
+#           (img_a_path, img_b_path),
+#           ...
 #       ],
 #   )
 
@@ -55,8 +55,8 @@ ABLATION_CONDITIONS: List[Tuple[str, Dict]] = [
 def _save_result(result: Dict, condition: str, pt: float, tc: int, run_idx: int):
     save_dir = Path("/content/KCC_CoRobot/results")
     save_dir.mkdir(exist_ok=True)
-    ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cond  = condition.replace(" ", "_").replace("/", "")
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    cond = condition.replace(" ", "_").replace("/", "")
     fname = save_dir / f"ablation_{result['task_id']}_{cond}_run{run_idx}_{ts}.json"
     with open(fname, "w", encoding="utf-8") as f:
         json.dump({**result, "condition": condition, "pt": pt, "tc": tc},
@@ -78,7 +78,6 @@ def run_ablation_study(
     Args:
         task_id     : 실험 태스크 ID (예: "task_003")
         image_pairs : [(img_a, img_b), ...] 이미지 페어 리스트
-                      페어 수 = 반복 실험 횟수
 
     Returns:
         PT / TC / NR 요약 DataFrame
