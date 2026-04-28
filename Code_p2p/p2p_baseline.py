@@ -1,18 +1,22 @@
 # p2p_baseline.py
 #
 # Baseline Comparison: Centralized / Independent
-# (P2P Ours 제외 — Ablation의 Full P2P로 대체)
 #
 # Centralized:
-#   Step 1. phase1 프롬프트(우리 것) → 두 방 observation 추출
-#   Step 2. observation 합쳐서 단일 플래너 → joint plan (PASS/handoff 없음)
+#   Step 1. VLM(img_a) → Room A 자연어 묘사
+#   Step 2. VLM(img_b) → Room B 자연어 묘사
+#   Step 3. VLM(img_a) + 두 묘사 + task → joint plan (few-shot 출력 포맷만)
 #
 # Independent:
-#   Step 1. phase1 프롬프트(우리 것) → 각자 observation 추출
-#   Step 2. 각자 자기 방 plan 생성 (상대방 모름, PASS/handoff 없음)
-#   Step 3. rule-based merge
+#   Step 1. VLM(img_a) → Room A 자연어 묘사
+#   Step 2. VLM(img_b) → Room B 자연어 묘사
+#   Step 3. 각자 묘사 + task → 각자 plan (few-shot 출력 포맷만)
+#   Step 4. rule-based merge
 #
-# 측정: PT (elapsed time), TC (token cost) 만 측정
+# 설계 원칙:
+#   - can_do/cannot_do/can_provide/need_from_other 등 우리 방법론 구조 없음
+#   - observation은 자연어로만 (이미지를 실제로 봄)
+#   - few-shot은 출력 JSON 포맷만 가이드
 #
 # 실행:
 #   from p2p_baseline import run_baseline_comparison
@@ -34,70 +38,93 @@ from IPython.display import display
 
 import p2p_vlm
 from p2p_config import AGENT_B_STEP_OFFSET
-from p2p_phases import (
-    _banner, _log, _run_parallel,
-    _build_phase1_prompt, _parse_offer,
-    format_joint_plan, offer_to_dict,
-)
+from p2p_phases import _banner, _log, _run_parallel, format_joint_plan
 from p2p_main import get_task
 from p2p_tracker import tracker
-from p2p_utils import extract_json, jdump
+from p2p_utils import extract_json
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OBSERVATION PROMPT (공통)
+# can_do/cannot_do 등 우리 방법론 구조 없이 자연어로만
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_observation_prompt(task: str) -> str:
+    return f"""Look at this image carefully.
+
+Task: "{task}"
+
+Describe the following in natural language:
+1. What room is this?
+2. What objects and areas do you see?
+3. What actions can be done in this room to help with the task?
+
+Be specific about visible objects. Keep it concise."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CENTRALIZED
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_centralized_prompt(task: str, offer_a, offer_b) -> str:
-    return f"""Task: "{task}"
-
-Room A (agent_A):
-- Observation: {offer_a.observation}
-- Visible objects: {offer_a.obs_scope}
-
-Room B (agent_B):
-- Observation: {offer_b.observation}
-- Visible objects: {offer_b.obs_scope}
-
-Generate a plan for both agents. Each agent works ONLY in their own room.
-No handoff or transfer between agents.
-
-Return ONLY valid JSON inside <JSON> tags:
+_CENTRALIZED_FEW_SHOT = """
+EXAMPLE OUTPUT FORMAT:
 <JSON>
-{{
+{
   "agent_A": [
-    {{"step_id": 1, "time_min": 0, "action": "verb + specific object"}}
+    {"step_id": 1, "time_min": 0,  "action": "take water bottle from refrigerator"},
+    {"step_id": 2, "time_min": 5,  "action": "prepare sandwich on countertop"},
+    {"step_id": 3, "time_min": 10, "action": "place food items on kitchen counter"}
   ],
   "agent_B": [
-    {{"step_id": 101, "time_min": 0, "action": "verb + specific object"}}
+    {"step_id": 101, "time_min": 0,  "action": "take laptop from dresser"},
+    {"step_id": 102, "time_min": 5,  "action": "place laptop on side table"},
+    {"step_id": 103, "time_min": 10, "action": "tidy bed for cleaner environment"}
   ]
-}}
+}
 </JSON>"""
+
+
+def _build_centralized_plan_prompt(task: str, obs_a: str, obs_b: str) -> str:
+    return f"""You are coordinating two home agents to complete a task.
+
+Task: "{task}"
+
+Room A (agent_A):
+{obs_a}
+
+Room B (agent_B):
+{obs_b}
+
+{_CENTRALIZED_FEW_SHOT}
+
+Generate a plan for BOTH agents. Each agent works ONLY in their own room.
+- agent_A steps: only actions possible in Room A
+- agent_B steps: only actions possible in Room B
+- step_id for agent_A: 1–99, for agent_B: 101–199
+- Generate 4–6 steps per agent
+- No handoff or transfer between agents
+
+Return ONLY valid JSON inside <JSON> tags."""
 
 
 def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
     task_str = get_task(task_id)
 
-    _banner("CENTRALIZED — STEP 1: OBSERVATION")
-    prompt_obs = _build_phase1_prompt(task_str)
+    # Step 1+2: 각 이미지 자연어 묘사
+    _banner("CENTRALIZED — STEP 1+2: OBSERVATION (자연어, 구조화 없음)")
+    prompt_obs = _build_observation_prompt(task_str)
     results    = _run_parallel([
         (img_a, prompt_obs, False),
         (img_b, prompt_obs, False),
     ])
-    raw_a, _ = results[0]
-    raw_b, _ = results[1]
-    _log("A RAW OFFER", raw_a)
-    _log("B RAW OFFER", raw_b)
+    obs_a, _ = results[0]
+    obs_b, _ = results[1]
+    _log("A OBSERVATION", obs_a)
+    _log("B OBSERVATION", obs_b)
 
-    offer_a = _parse_offer(raw_a, "agent_A")
-    offer_b = _parse_offer(raw_b, "agent_B")
-    _log("OFFER A", jdump(offer_to_dict(offer_a)))
-    _log("OFFER B", jdump(offer_to_dict(offer_b)))
-    print(f"\n  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)}")
-    print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)}")
-
-    _banner("CENTRALIZED — STEP 2: JOINT PLAN (단일 플래너, handoff 없음)")
-    prompt = _build_centralized_prompt(task_str, offer_a, offer_b)
+    # Step 3: 단일 플래너 → joint plan
+    _banner("CENTRALIZED — STEP 3: JOINT PLAN (단일 플래너, handoff 없음)")
+    prompt = _build_centralized_plan_prompt(task_str, obs_a, obs_b)
     raw, _ = p2p_vlm.run_vlm(img_a, prompt)
     _log("CENTRALIZED RAW PLAN", raw)
 
@@ -105,7 +132,7 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
     if not isinstance(data, dict):
         data = {}
 
-    def _parse(steps_raw, agent_id, room, offset):
+    def _parse(steps_raw, agent_id, offset):
         if not isinstance(steps_raw, list):
             return []
         out = []
@@ -117,7 +144,7 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
                 "step_id":      sid if sid >= offset else sid + offset,
                 "time_min":     s.get("time_min", 0),
                 "agent_id":     agent_id,
-                "room":         room,
+                "room":         "kitchen" if agent_id == "agent_A" else "bedroom",
                 "action":       s.get("action", ""),
                 "depends_on":   [],
                 "handoff_type": None,
@@ -125,8 +152,8 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
             })
         return out
 
-    steps_a    = _parse(data.get("agent_A", []), "agent_A", offer_a.room_type, 0)
-    steps_b    = _parse(data.get("agent_B", []), "agent_B", offer_b.room_type, AGENT_B_STEP_OFFSET)
+    steps_a    = _parse(data.get("agent_A", []), "agent_A", 0)
+    steps_b    = _parse(data.get("agent_B", []), "agent_B", AGENT_B_STEP_OFFSET)
     joint_plan = sorted(steps_a + steps_b,
                         key=lambda s: (s.get("time_min", 0), s.get("step_id", 0)))
 
@@ -140,7 +167,6 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
         "method":     "Centralized",
         "task_id":    task_id,
         "task":       task_str,
-        "offers":     {"agent_A": offer_to_dict(offer_a), "agent_B": offer_to_dict(offer_b)},
         "joint_plan": joint_plan,
     }
 
@@ -149,24 +175,35 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
 # INDEPENDENT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_independent_prompt(task: str, offer) -> str:
-    return f"""Task: "{task}"
+_INDEPENDENT_FEW_SHOT = """
+EXAMPLE OUTPUT FORMAT:
+<JSON>
+{
+  "plan_steps": [
+    {"step_id": 1, "time_min": 0,  "action": "take water bottle from refrigerator"},
+    {"step_id": 2, "time_min": 5,  "action": "prepare sandwich on countertop"},
+    {"step_id": 3, "time_min": 10, "action": "place food on kitchen counter"}
+  ]
+}
+</JSON>"""
+
+
+def _build_independent_plan_prompt(task: str, obs: str) -> str:
+    return f"""You are a home agent working independently.
+
+Task: "{task}"
 
 Your room:
-- Observation: {offer.observation}
-- Visible objects: {offer.obs_scope}
+{obs}
 
-Generate a plan for YOUR room only. Work independently.
-No handoff or transfer to other agents.
+{_INDEPENDENT_FEW_SHOT}
 
-Return ONLY valid JSON inside <JSON> tags:
-<JSON>
-{{
-  "plan_steps": [
-    {{"step_id": 1, "time_min": 0, "action": "verb + specific object"}}
-  ]
-}}
-</JSON>"""
+Generate a plan for YOUR room only.
+- Only actions possible in your room
+- Generate 4–6 steps
+- No handoff or transfer to other agents
+
+Return ONLY valid JSON inside <JSON> tags."""
 
 
 def _rule_based_merge(steps_a: List[Dict], steps_b: List[Dict]) -> List[Dict]:
@@ -181,27 +218,22 @@ def _rule_based_merge(steps_a: List[Dict], steps_b: List[Dict]) -> List[Dict]:
 def run_independent(task_id: str, img_a: str, img_b: str) -> Dict:
     task_str = get_task(task_id)
 
-    _banner("INDEPENDENT — STEP 1: OBSERVATION")
-    prompt_obs = _build_phase1_prompt(task_str)
+    # Step 1+2: 각 이미지 자연어 묘사
+    _banner("INDEPENDENT — STEP 1+2: OBSERVATION (자연어, 구조화 없음)")
+    prompt_obs = _build_observation_prompt(task_str)
     results    = _run_parallel([
         (img_a, prompt_obs, False),
         (img_b, prompt_obs, False),
     ])
-    raw_a, _ = results[0]
-    raw_b, _ = results[1]
-    _log("A RAW OFFER", raw_a)
-    _log("B RAW OFFER", raw_b)
+    obs_a, _ = results[0]
+    obs_b, _ = results[1]
+    _log("A OBSERVATION", obs_a)
+    _log("B OBSERVATION", obs_b)
 
-    offer_a = _parse_offer(raw_a, "agent_A")
-    offer_b = _parse_offer(raw_b, "agent_B")
-    _log("OFFER A", jdump(offer_to_dict(offer_a)))
-    _log("OFFER B", jdump(offer_to_dict(offer_b)))
-    print(f"\n  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)}")
-    print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)}")
-
-    _banner("INDEPENDENT — STEP 2: LOCAL PLANNING (상대방 정보 없음)")
-    prompt_a = _build_independent_prompt(task_str, offer_a)
-    prompt_b = _build_independent_prompt(task_str, offer_b)
+    # Step 3: 각자 독립 plan
+    _banner("INDEPENDENT — STEP 3: LOCAL PLANNING (상대방 모름)")
+    prompt_a = _build_independent_plan_prompt(task_str, obs_a)
+    prompt_b = _build_independent_plan_prompt(task_str, obs_b)
     results       = _run_parallel([
         (img_a, prompt_a, False),
         (img_b, prompt_b, False),
@@ -234,11 +266,12 @@ def run_independent(task_id: str, img_a: str, img_b: str) -> Dict:
             })
         return out
 
-    steps_a = _parse(raw_pa, "agent_A", offer_a.room_type, 0)
-    steps_b = _parse(raw_pb, "agent_B", offer_b.room_type, 0)
+    steps_a = _parse(raw_pa, "agent_A", "kitchen", 0)
+    steps_b = _parse(raw_pb, "agent_B", "bedroom", 0)
     print(f"\n  A: {len(steps_a)} steps | B: {len(steps_b)} steps")
 
-    _banner("INDEPENDENT — STEP 3: RULE-BASED MERGE")
+    # Step 4: rule-based merge
+    _banner("INDEPENDENT — STEP 4: RULE-BASED MERGE")
     joint_plan = _rule_based_merge(steps_a, steps_b)
     print(f"  Merged: {len(joint_plan)} steps total")
     print("\n" + "█" * 68)
@@ -250,7 +283,6 @@ def run_independent(task_id: str, img_a: str, img_b: str) -> Dict:
         "method":     "Independent",
         "task_id":    task_id,
         "task":       task_str,
-        "offers":     {"agent_A": offer_to_dict(offer_a), "agent_B": offer_to_dict(offer_b)},
         "joint_plan": joint_plan,
     }
 
