@@ -21,6 +21,9 @@ from typing import List, Tuple
 
 from p2p_config import MAX_NEW_TOKENS
 
+
+_last_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0}
+
 # ── 백엔드 선택 ───────────────────────────────────────────────────────────────
 VLM_BACKEND = os.environ.get("VLM_BACKEND", "qwen").lower()
 
@@ -109,8 +112,7 @@ def _load_openai():
 def _run_openai(image_path: str, prompt: str, return_logprobs: bool = False) -> Tuple[str, List[float]]:
     _load_openai()
 
-    # 이미지 base64 인코딩
-    ext = image_path.rsplit(".", 1)[-1].lower()
+    ext  = image_path.rsplit(".", 1)[-1].lower()
     mime = {
         "jpg": "image/jpeg", "jpeg": "image/jpeg",
         "png": "image/png",  "webp": "image/webp",
@@ -125,32 +127,29 @@ def _run_openai(image_path: str, prompt: str, return_logprobs: bool = False) -> 
         "messages": [{
             "role": "user",
             "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{img_b64}"},
-                },
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
                 {"type": "text", "text": prompt},
             ],
         }],
     }
 
-    # logprobs 요청 (GPT-4o는 top_logprobs 지원)
     if return_logprobs:
         kwargs["logprobs"]     = True
         kwargs["top_logprobs"] = 1
 
-    response = _openai_client.chat.completions.create(**kwargs)
-    text_out = response.choices[0].message.content.strip()
+    response = _openai_client.chat.completions.create(**kwargs)  # ← 한 번만
 
-    log_probs: List[float] = []
+    # 토큰 기록
+    _last_usage["prompt_tokens"]     = response.usage.prompt_tokens
+    _last_usage["completion_tokens"] = response.usage.completion_tokens
+
+    text_out  = response.choices[0].message.content.strip()
+    log_probs = []
     if return_logprobs and response.choices[0].logprobs:
-        log_probs = [
-            t.logprob
-            for t in response.choices[0].logprobs.content
-        ]
+        log_probs = [t.logprob for t in response.choices[0].logprobs.content]
 
     return text_out, log_probs
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 통합 인터페이스
