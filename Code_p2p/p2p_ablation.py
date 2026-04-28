@@ -3,12 +3,20 @@
 # Ablation Study: offer / negotiation / hq 각 컴포넌트 기여도 측정
 #
 # p2p_main.run()의 플래그만 바꿔서 실행
+# 측정: PT (elapsed time), TC (token cost) 만 측정
 #
 # 조건:
 #   Full P2P        : use_offer=True,  use_negotiation=True,  use_human_query=True
 #   w/o Offer       : use_offer=False, use_negotiation=True,  use_human_query=True
 #   w/o Negotiate   : use_offer=True,  use_negotiation=False, use_human_query=True
 #   w/o HQ          : use_offer=True,  use_negotiation=True,  use_human_query=False
+#
+# 실행:
+#   from p2p_ablation import run_ablation_study
+#   run_ablation_study(
+#       task_id     = "task_003",
+#       image_pairs = [(img_a, img_b), ...],
+#   )
 
 from __future__ import annotations
 
@@ -64,8 +72,9 @@ def run_ablation_study(
 
     for run_idx, (img_a, img_b) in enumerate(image_pairs, 1):
         print(f"\n{'━'*68}")
-        print(f"  [Run {run_idx}/{len(image_pairs)}]  img_a: {img_a}")
-        print(f"  {'':>10}img_b: {img_b}")
+        print(f"  [Run {run_idx}/{len(image_pairs)}]")
+        print(f"  img_a: {img_a}")
+        print(f"  img_b: {img_b}")
         print(f"{'━'*68}")
 
         for condition, flags in ABLATION_CONDITIONS:
@@ -84,16 +93,15 @@ def run_ablation_study(
             except Exception as e:
                 print(f"  [ERROR] {condition}: {e}")
                 tracker.stop()
-                all_rows[condition].append({"pt": 0.0, "tc": 0, "neg_rounds": 0})
+                all_rows[condition].append({"pt": 0.0, "tc": 0})
                 continue
             tracker.stop()
 
             pt = tracker.elapsed
             tc = tracker.total_tokens
-            nr = result.get("metrics", {}).get("negotiation_rounds", 0)
             print(tracker.summary(condition))
             _save_result(result, condition, pt, tc, run_idx)
-            all_rows[condition].append({"pt": pt, "tc": tc, "neg_rounds": nr})
+            all_rows[condition].append({"pt": pt, "tc": tc})
 
     # ── 결과 테이블 ──────────────────────────────────────────────────────────
     final_rows = []
@@ -103,23 +111,21 @@ def run_ablation_study(
             "Condition": condition,
             "PT(s)":     round(float(np.mean([r["pt"] for r in rows])), 2),
             "TC":        int(np.mean([r["tc"] for r in rows])),
-            "NR":        round(float(np.mean([r["neg_rounds"] for r in rows])), 1),
         })
 
-    df = pd.DataFrame(final_rows)[["Condition", "PT(s)", "TC", "NR"]]
+    df = pd.DataFrame(final_rows)[["Condition", "PT(s)", "TC"]]
 
     print("\n" + "█" * 68)
-    print("  Table. Ablation Study — PT / TC / NR")
+    print("  Table. Ablation Study — PT / TC")
     print("█" * 68)
     display(
         df.style
           .hide(axis="index")
-          .format({"PT(s)": "{:.2f}", "TC": "{:,}", "NR": "{:.1f}"})
+          .format({"PT(s)": "{:.2f}", "TC": "{:,}"})
           .set_properties(**{"text-align": "center"})
     )
     print("\n[Markdown]")
     print(df.to_markdown(index=False))
     print("\n※ 플랜 품질은 위 자연어 출력을 통해 확인하세요.")
-    print("※ NR = Negotiation Rounds (w/o Negotiate는 항상 0)")
 
     return df
