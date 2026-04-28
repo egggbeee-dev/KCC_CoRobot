@@ -2,23 +2,13 @@
 #
 # Ablation Study: offer / negotiation / hq 각 컴포넌트 기여도 측정
 #
-# p2p_main.run()의 플래그만 바꿔서 실행 — 별도 phase 호출 없음
+# p2p_main.run()의 플래그만 바꿔서 실행
 #
 # 조건:
 #   Full P2P        : use_offer=True,  use_negotiation=True,  use_human_query=True
 #   w/o Offer       : use_offer=False, use_negotiation=True,  use_human_query=True
 #   w/o Negotiate   : use_offer=True,  use_negotiation=False, use_human_query=True
 #   w/o HQ          : use_offer=True,  use_negotiation=True,  use_human_query=False
-#
-# 실행 (Colab):
-#   from p2p_ablation import run_ablation_study
-#   run_ablation_study(
-#       task_id     = "task_003",
-#       image_pairs = [
-#           (img_a_path, img_b_path),
-#           ...
-#       ],
-#   )
 
 from __future__ import annotations
 
@@ -36,10 +26,6 @@ from p2p_tracker import tracker
 from p2p_utils import _banner
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ABLATION 조건 정의
-# ══════════════════════════════════════════════════════════════════════════════
-
 ABLATION_CONDITIONS: List[Tuple[str, Dict]] = [
     ("Full P2P",      dict(use_offer=True,  use_negotiation=True,  use_human_query=True)),
     ("w/o Offer",     dict(use_offer=False, use_negotiation=True,  use_human_query=True)),
@@ -48,15 +34,11 @@ ABLATION_CONDITIONS: List[Tuple[str, Dict]] = [
 ]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# RESULT SAVE
-# ══════════════════════════════════════════════════════════════════════════════
-
 def _save_result(result: Dict, condition: str, pt: float, tc: int, run_idx: int):
     save_dir = Path("/content/KCC_CoRobot/results")
     save_dir.mkdir(exist_ok=True)
-    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cond = condition.replace(" ", "_").replace("/", "")
+    ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    cond  = condition.replace(" ", "_").replace("/", "")
     fname = save_dir / f"ablation_{result['task_id']}_{cond}_run{run_idx}_{ts}.json"
     with open(fname, "w", encoding="utf-8") as f:
         json.dump({**result, "condition": condition, "pt": pt, "tc": tc},
@@ -64,23 +46,14 @@ def _save_result(result: Dict, condition: str, pt: float, tc: int, run_idx: int)
     print(f"  → 저장: {fname}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════════════════════
-
 def run_ablation_study(
     task_id:     str,
     image_pairs: List[Tuple[str, str]],
 ) -> pd.DataFrame:
     """
-    Ablation Study 실행.
-
     Args:
-        task_id     : 실험 태스크 ID (예: "task_003")
+        task_id     : 실험 태스크 ID
         image_pairs : [(img_a, img_b), ...] 이미지 페어 리스트
-
-    Returns:
-        PT / TC / NR 요약 DataFrame
     """
     SEP = "═" * 68
     print(SEP)
@@ -91,9 +64,8 @@ def run_ablation_study(
 
     for run_idx, (img_a, img_b) in enumerate(image_pairs, 1):
         print(f"\n{'━'*68}")
-        print(f"  [Run {run_idx}/{len(image_pairs)}]")
-        print(f"  img_a: {img_a}")
-        print(f"  img_b: {img_b}")
+        print(f"  [Run {run_idx}/{len(image_pairs)}]  img_a: {img_a}")
+        print(f"  {'':>10}img_b: {img_b}")
         print(f"{'━'*68}")
 
         for condition, flags in ABLATION_CONDITIONS:
@@ -119,7 +91,6 @@ def run_ablation_study(
             pt = tracker.elapsed
             tc = tracker.total_tokens
             nr = result.get("metrics", {}).get("negotiation_rounds", 0)
-
             print(tracker.summary(condition))
             _save_result(result, condition, pt, tc, run_idx)
             all_rows[condition].append({"pt": pt, "tc": tc, "neg_rounds": nr})
