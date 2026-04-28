@@ -2,13 +2,6 @@
 #
 # PT (Planning Time) + TC (Token Cost) 측정 모듈
 #
-# 사용법:
-#   from p2p_tracker import tracker
-#   tracker.start()
-#   ... 실험 실행 ...
-#   tracker.stop()
-#   print(tracker.summary())
-#
 # 주의: p2p_vlm.py에 아래 두 줄이 추가되어 있어야 합니다.
 #   _last_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0}
 #   # _run_openai 내부 response 생성 직후:
@@ -23,8 +16,6 @@ _original_run_vlm = p2p_vlm.run_vlm
 
 
 class ExperimentTracker:
-    """실험 단위 PT / TC 누적 트래커."""
-
     def __init__(self):
         self._start: float | None = None
         self.elapsed: float       = 0.0
