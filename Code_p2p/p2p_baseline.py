@@ -3,21 +3,18 @@
 # Baseline Comparison: Centralized / Independent / P2P (Ours)
 #
 # ─ P2P (Ours)   : p2p_main.run() 그대로
-# ─ Centralized  : observe_and_draft()로 두 방 observation 추출
+# ─ Centralized  : phase1으로 두 방 observation 추출
 #                  → 단일 플래너가 joint plan 생성 (협상 없음)
-# ─ Independent  : observe_and_draft() + coordinate(use_offer=False)
-#                  → rule-based merge (협상 없음)
-#
-# 출력 스타일: p2p_main.run() / p2p_phases.py 와 동일
-# 측정:        PT (elapsed time), TC (token cost) — 자동
+# ─ Independent  : phase1(우리 프롬프트 그대로) + phase2(use_offer=False)
+#                  → rule-based merge (협상 없음, 상대방 정보 없음)
 #
 # 실행 (Colab):
 #   from p2p_baseline import run_baseline_comparison
 #   run_baseline_comparison(
 #       task_id     = "task_003",
 #       image_pairs = [
-#           ("/content/.../kitchen_11.png", "/content/.../bedroom_1.png"),
-#           ("/content/.../kitchen_08.png", "/content/.../bedroom_3.png"),
+#           (img_a_path, img_b_path),
+#           ...
 #       ],
 #   )
 
@@ -37,20 +34,24 @@ from p2p_config import AGENT_B_STEP_OFFSET
 from p2p_phases import (
     _banner, _log,
     _build_phase1_prompt, _parse_offer,
-    _run_parallel, plan_steps_to_dicts,
-    observe_and_draft, coordinate,
+    _build_phase2_prompt, _parse_local_plan,
+    _run_parallel,
+    plan_steps_to_dicts,
     format_joint_plan, offer_to_dict,
 )
 from p2p_main import get_task, run
 from p2p_tracker import tracker
-from p2p_utils import extract_json, jdump, _banner
+from p2p_utils import extract_json, jdump
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CENTRALIZED BASELINE
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# Step 1. phase1 프롬프트(우리 것 그대로)로 두 방 observation 추출
+# Step 2. 두 observation 합쳐서 단일 플래너에게 joint plan 요청 (협상 없음)
 
-_CENTRALIZED_JOINT_EXAMPLE = """
+_CENTRALIZED_EXAMPLE = """
 EXAMPLE — task "prepare movie night":
 <JSON>
 {
@@ -76,10 +77,6 @@ EXAMPLE — task "prepare movie night":
 
 
 def _build_centralized_prompt(task: str, offer_a, offer_b) -> str:
-    """
-    두 방 observation을 합쳐 단일 플래너에게 joint plan 요청.
-    우리 phase 프롬프트 구조 베이스 — 협상 없이 한 번에 생성.
-    """
     return f"""You are a centralized planner coordinating two embodied home agents.
 
 Global task: "{task}"
@@ -96,7 +93,7 @@ Room B (agent_B):
 - Can do: {json.dumps(offer_b.can_do, ensure_ascii=False)}
 - Cannot do: {json.dumps([c.action for c in offer_b.cannot_do], ensure_ascii=False)}
 
-{_CENTRALIZED_JOINT_EXAMPLE}
+{_CENTRALIZED_EXAMPLE}
 
 Generate a joint plan for BOTH agents to achieve the task together.
 
@@ -128,24 +125,34 @@ RULES:
 
 
 def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
-    """
-    Centralized baseline.
-    Step 1: observe_and_draft()로 두 방 observation 추출 (우리 프롬프트 동일)
-    Step 2: 단일 플래너가 두 observation 보고 joint plan 생성 (협상 없음)
-    """
     task_str = get_task(task_id)
 
-    # Step 1: 우리 시스템과 동일한 프롬프트로 observation 추출
-    _banner("CENTRALIZED — STEP 1: OBSERVATION (우리 시스템과 동일한 프롬프트)")
-    offer_a, offer_b, _, _ = observe_and_draft(img_a, img_b, task_str, verbose="full")
+    # Step 1: 우리 phase1 프롬프트 그대로 — observation 추출
+    _banner("CENTRALIZED — STEP 1: OBSERVATION (우리 phase1 프롬프트 동일)")
+    prompt_obs = _build_phase1_prompt(task_str)
+    results    = _run_parallel([
+        (img_a, prompt_obs, False),
+        (img_b, prompt_obs, False),
+    ])
+    raw_a, _ = results[0]
+    raw_b, _ = results[1]
+    _log("A RAW OFFER", raw_a)
+    _log("B RAW OFFER", raw_b)
 
-    # Step 2: 두 observation 합쳐서 단일 플래너에게 joint plan 요청
+    offer_a = _parse_offer(raw_a, "agent_A")
+    offer_b = _parse_offer(raw_b, "agent_B")
+    _log("OFFER A", jdump(offer_to_dict(offer_a)))
+    _log("OFFER B", jdump(offer_to_dict(offer_b)))
+    print(f"\n  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)}")
+    print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)}")
+
+    # Step 2: 두 observation 합쳐서 단일 플래너 → joint plan (협상 없음)
     _banner("CENTRALIZED — STEP 2: JOINT PLAN (단일 플래너, 협상 없음)")
-    prompt = _build_centralized_prompt(task_str, offer_a, offer_b)
-    raw, _ = p2p_vlm.run_vlm(img_a, prompt)
-    _log("CENTRALIZED RAW JOINT PLAN", raw)
+    prompt_joint = _build_centralized_prompt(task_str, offer_a, offer_b)
+    raw_joint, _ = p2p_vlm.run_vlm(img_a, prompt_joint)
+    _log("CENTRALIZED RAW JOINT PLAN", raw_joint)
 
-    data = extract_json(raw)
+    data = extract_json(raw_joint)
     if not isinstance(data, dict):
         data = {}
 
@@ -159,7 +166,7 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
             s["agent_id"] = agent_id
             s["room"]     = room
             sid = s.get("step_id", len(out) + 1)
-            s["step_id"] = sid if sid >= offset else sid + offset
+            s["step_id"]  = sid if sid >= offset else sid + offset
             out.append(s)
         return out
 
@@ -175,21 +182,26 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
     print(format_joint_plan(joint_plan, task_str))
 
     return {
-        "method":           "Centralized",
-        "task_id":          task_id,
-        "task":             task_str,
-        "offers":           {"agent_A": offer_to_dict(offer_a), "agent_B": offer_to_dict(offer_b)},
-        "joint_plan":       joint_plan,
+        "method":     "Centralized",
+        "task_id":    task_id,
+        "task":       task_str,
+        "offers":     {"agent_A": offer_to_dict(offer_a), "agent_B": offer_to_dict(offer_b)},
+        "joint_plan": joint_plan,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INDEPENDENT BASELINE
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# Step 1. phase1 프롬프트(우리 것 그대로)로 각자 observation 추출
+# Step 2. phase2_local_plan(use_offer=False) — 상대방 정보 없이 각자 계획
+#         (coordinate() 사용 안 함 — 상대 draft를 보여주는 구조라 부적합)
+# Step 3. rule-based merge — 의미론적 충돌 해결 없음
 
 def _rule_based_merge(steps_a: List[Dict], steps_b: List[Dict]) -> List[Dict]:
     """
-    Rule-based merge:
+    rule-based merge:
     - step_id 충돌 방지 (agent_B offset 적용)
     - time_min 기준 정렬
     - 의미론적 충돌 해결 없음 (Independent의 핵심 약점)
@@ -197,42 +209,57 @@ def _rule_based_merge(steps_a: List[Dict], steps_b: List[Dict]) -> List[Dict]:
     for s in steps_b:
         if s.get("step_id", 0) < AGENT_B_STEP_OFFSET:
             s["step_id"] = s["step_id"] + AGENT_B_STEP_OFFSET
-
     merged = list(steps_a) + list(steps_b)
     merged.sort(key=lambda s: (s.get("time_min", 0), s.get("step_id", 0)))
     return merged
 
 
 def run_independent(task_id: str, img_a: str, img_b: str) -> Dict:
-    """
-    Independent baseline.
-    Step 1: observe_and_draft() — 우리 프롬프트 동일
-    Step 2: coordinate(use_offer=False) — 상대방 offer 정보 없이 각자 계획
-    Step 3: rule-based merge — 협상/충돌해결 없음
-    """
     task_str = get_task(task_id)
 
-    # Step 1: 우리 시스템과 동일한 프롬프트로 observation + draft
-    _banner("INDEPENDENT — STEP 1: OBSERVATION (우리 시스템과 동일한 프롬프트)")
-    offer_a, offer_b, draft_a, draft_b = observe_and_draft(
-        img_a, img_b, task_str, verbose="full",
-    )
+    # Step 1: 우리 phase1 프롬프트 그대로 — 각자 observation 추출
+    _banner("INDEPENDENT — STEP 1: OBSERVATION (우리 phase1 프롬프트 동일)")
+    prompt_obs = _build_phase1_prompt(task_str)
+    results    = _run_parallel([
+        (img_a, prompt_obs, False),
+        (img_b, prompt_obs, False),
+    ])
+    raw_a, _ = results[0]
+    raw_b, _ = results[1]
+    _log("A RAW OFFER", raw_a)
+    _log("B RAW OFFER", raw_b)
 
-    # Step 2: 상대방 offer 정보 없이 각자 계획 (use_offer=False)
-    _banner("INDEPENDENT — STEP 2: LOCAL PLANNING (상대방 offer 정보 미사용)")
-    plan_a, plan_b = coordinate(
-        offer_a, offer_b, draft_a, draft_b,
-        img_a, img_b, task_str,
-        use_offer=False,
-        verbose="full",
-    )
+    offer_a = _parse_offer(raw_a, "agent_A")
+    offer_b = _parse_offer(raw_b, "agent_B")
+    _log("OFFER A", jdump(offer_to_dict(offer_a)))
+    _log("OFFER B", jdump(offer_to_dict(offer_b)))
+    print(f"\n  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)}")
+    print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)}")
 
-    # Step 3: Rule-based merge (협상 없음)
+    # Step 2: phase2_local_plan(use_offer=False)
+    # 상대방 can_provide / need_from_other 미제공 → 완전 독립 계획
+    _banner("INDEPENDENT — STEP 2: LOCAL PLANNING (우리 phase2 프롬프트, 상대방 정보 없음)")
+    prompt_a = _build_phase2_prompt(offer_a, offer_b, task_str, use_offer=False)
+    prompt_b = _build_phase2_prompt(offer_b, offer_a, task_str, use_offer=False)
+    results        = _run_parallel([
+        (img_a, prompt_a, True),
+        (img_b, prompt_b, True),
+    ])
+    raw_pa, logp_a = results[0]
+    raw_pb, logp_b = results[1]
+    _log("A RAW PLAN", raw_pa)
+    _log("B RAW PLAN", raw_pb)
+
+    plan_a = _parse_local_plan(raw_pa, logp_a, offer_a, step_offset=0)
+    plan_b = _parse_local_plan(raw_pb, logp_b, offer_b, step_offset=AGENT_B_STEP_OFFSET)
+
+    steps_a = plan_steps_to_dicts(plan_a.steps)
+    steps_b = plan_steps_to_dicts(plan_b.steps)
+    print(f"\n  A: {len(steps_a)} steps | B: {len(steps_b)} steps")
+
+    # Step 3: Rule-based merge
     _banner("INDEPENDENT — STEP 3: RULE-BASED MERGE (의미론적 충돌 해결 없음)")
-    steps_a    = plan_steps_to_dicts(plan_a.steps)
-    steps_b    = plan_steps_to_dicts(plan_b.steps)
     joint_plan = _rule_based_merge(steps_a, steps_b)
-
     print(f"  Merged: {len(joint_plan)} steps total")
     print("\n" + "█" * 68)
     print("  FINAL JOINT PLAN — Independent")
@@ -293,7 +320,6 @@ def run_baseline_comparison(
     Args:
         task_id     : 실험 태스크 ID (예: "task_003")
         image_pairs : [(img_a, img_b), ...] 이미지 페어 리스트
-                      페어 수 = 반복 실험 횟수
 
     Returns:
         PT / TC 요약 DataFrame
