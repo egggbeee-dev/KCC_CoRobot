@@ -1,6 +1,7 @@
 # p2p_baseline.py
 #
-# Baseline Comparison: Centralized / Independent / P2P (Ours)
+# Baseline Comparison: Centralized / Independent
+# (P2P Ours 제외 — Ablation의 Full P2P로 대체)
 #
 # Centralized:
 #   Step 1. phase1 프롬프트(우리 것) → 두 방 observation 추출
@@ -11,17 +12,13 @@
 #   Step 2. 각자 자기 방 plan 생성 (상대방 모름, PASS/handoff 없음)
 #   Step 3. rule-based merge
 #
-# P2P (Ours):
-#   p2p_main.run() 그대로
+# 측정: PT (elapsed time), TC (token cost) 만 측정
 #
 # 실행:
 #   from p2p_baseline import run_baseline_comparison
 #   run_baseline_comparison(
 #       task_id     = "task_003",
-#       image_pairs = [
-#           (img_a, img_b),
-#           ...
-#       ],
+#       image_pairs = [(img_a, img_b), ...],
 #   )
 
 from __future__ import annotations
@@ -42,7 +39,7 @@ from p2p_phases import (
     _build_phase1_prompt, _parse_offer,
     format_joint_plan, offer_to_dict,
 )
-from p2p_main import get_task, run
+from p2p_main import get_task
 from p2p_tracker import tracker
 from p2p_utils import extract_json, jdump
 
@@ -51,7 +48,7 @@ from p2p_utils import extract_json, jdump
 # CENTRALIZED
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_centralized_plan_prompt(task: str, offer_a, offer_b) -> str:
+def _build_centralized_prompt(task: str, offer_a, offer_b) -> str:
     return f"""Task: "{task}"
 
 Room A (agent_A):
@@ -63,7 +60,7 @@ Room B (agent_B):
 - Visible objects: {offer_b.obs_scope}
 
 Generate a plan for both agents. Each agent works ONLY in their own room.
-No handoff, no transfer between agents.
+No handoff or transfer between agents.
 
 Return ONLY valid JSON inside <JSON> tags:
 <JSON>
@@ -81,7 +78,6 @@ Return ONLY valid JSON inside <JSON> tags:
 def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
     task_str = get_task(task_id)
 
-    # Step 1: 우리 phase1 프롬프트로 observation 추출
     _banner("CENTRALIZED — STEP 1: OBSERVATION")
     prompt_obs = _build_phase1_prompt(task_str)
     results    = _run_parallel([
@@ -100,9 +96,8 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
     print(f"\n  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)}")
     print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)}")
 
-    # Step 2: 단일 플래너 → joint plan
-    _banner("CENTRALIZED — STEP 2: JOINT PLAN")
-    prompt = _build_centralized_plan_prompt(task_str, offer_a, offer_b)
+    _banner("CENTRALIZED — STEP 2: JOINT PLAN (단일 플래너, handoff 없음)")
+    prompt = _build_centralized_prompt(task_str, offer_a, offer_b)
     raw, _ = p2p_vlm.run_vlm(img_a, prompt)
     _log("CENTRALIZED RAW PLAN", raw)
 
@@ -154,7 +149,7 @@ def run_centralized(task_id: str, img_a: str, img_b: str) -> Dict:
 # INDEPENDENT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_independent_plan_prompt(task: str, offer) -> str:
+def _build_independent_prompt(task: str, offer) -> str:
     return f"""Task: "{task}"
 
 Your room:
@@ -162,7 +157,7 @@ Your room:
 - Visible objects: {offer.obs_scope}
 
 Generate a plan for YOUR room only. Work independently.
-No handoff, no transfer to other agents.
+No handoff or transfer to other agents.
 
 Return ONLY valid JSON inside <JSON> tags:
 <JSON>
@@ -186,7 +181,6 @@ def _rule_based_merge(steps_a: List[Dict], steps_b: List[Dict]) -> List[Dict]:
 def run_independent(task_id: str, img_a: str, img_b: str) -> Dict:
     task_str = get_task(task_id)
 
-    # Step 1: 우리 phase1 프롬프트로 각자 observation 추출
     _banner("INDEPENDENT — STEP 1: OBSERVATION")
     prompt_obs = _build_phase1_prompt(task_str)
     results    = _run_parallel([
@@ -205,11 +199,10 @@ def run_independent(task_id: str, img_a: str, img_b: str) -> Dict:
     print(f"\n  A: room={offer_a.room_type} | can_do={len(offer_a.can_do)}")
     print(f"  B: room={offer_b.room_type} | can_do={len(offer_b.can_do)}")
 
-    # Step 2: 각자 독립 plan 생성 (상대방 모름)
-    _banner("INDEPENDENT — STEP 2: LOCAL PLANNING")
-    prompt_a = _build_independent_plan_prompt(task_str, offer_a)
-    prompt_b = _build_independent_plan_prompt(task_str, offer_b)
-    results        = _run_parallel([
+    _banner("INDEPENDENT — STEP 2: LOCAL PLANNING (상대방 정보 없음)")
+    prompt_a = _build_independent_prompt(task_str, offer_a)
+    prompt_b = _build_independent_prompt(task_str, offer_b)
+    results       = _run_parallel([
         (img_a, prompt_a, False),
         (img_b, prompt_b, False),
     ])
@@ -245,7 +238,6 @@ def run_independent(task_id: str, img_a: str, img_b: str) -> Dict:
     steps_b = _parse(raw_pb, "agent_B", offer_b.room_type, 0)
     print(f"\n  A: {len(steps_a)} steps | B: {len(steps_b)} steps")
 
-    # Step 3: rule-based merge
     _banner("INDEPENDENT — STEP 3: RULE-BASED MERGE")
     joint_plan = _rule_based_merge(steps_a, steps_b)
     print(f"  Merged: {len(joint_plan)} steps total")
@@ -264,20 +256,6 @@ def run_independent(task_id: str, img_a: str, img_b: str) -> Dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# P2P (OURS)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def run_ours(task_id: str, img_a: str, img_b: str) -> Dict:
-    return run(
-        task_id = task_id,
-        img_a   = img_a,
-        img_b   = img_b,
-        label   = "P2P (Ours)",
-        verbose = "full",
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # SAVE
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -285,8 +263,7 @@ def _save_result(result: Dict, pt: float, tc: int, run_idx: int):
     save_dir = Path("/content/KCC_CoRobot/results")
     save_dir.mkdir(exist_ok=True)
     ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
-    method = result.get("method", result.get("label", "ours"))
-    method = method.replace(" ", "_").replace("(", "").replace(")", "")
+    method = result["method"].replace(" ", "_")
     fname  = save_dir / f"baseline_{result['task_id']}_{method}_run{run_idx}_{ts}.json"
     with open(fname, "w", encoding="utf-8") as f:
         json.dump({**result, "pt": pt, "tc": tc}, f, ensure_ascii=False, indent=2)
@@ -307,7 +284,6 @@ def run_baseline_comparison(
         image_pairs : [(img_a, img_b), ...] 이미지 페어 리스트
     """
     conditions = [
-        ("P2P (Ours)",  run_ours),
         ("Centralized", run_centralized),
         ("Independent", run_independent),
     ]
