@@ -17,6 +17,7 @@ from p2p_phase_nagent import (
     phase3_conflict_detection_n,
     phase4_negotiation_n,
     phase5_convergence_check_n,
+    phase6_human_query_n,
     phase_finalize_n,
 )
 
@@ -28,6 +29,7 @@ def run_n(
     n_agents: Optional[int] = None,
     use_offer: bool = True,          # 현재 offer 생성은 항상 수행 (ablation 옵션은 추후 필요시 확장)
     use_negotiation: bool = True,
+    use_human_query: bool = True,
     label: Optional[str] = None,
     verbose: str = "full",
 ) -> Dict:
@@ -89,10 +91,16 @@ def run_n(
     )
 
     # ── PHASE 5: CONVERGENCE CHECK ────────────────────────────────────────
-    convergence = phase5_convergence_check_n(cur_steps, offers, agent_ids)
+    convergence = phase5_convergence_check_n(cur_steps, offers, agent_ids, all_conflicts)
+
+    # ── PHASE 6: DEFERRED HUMAN QUERY (미해결 문제가 있을 때만) ─────────────
+    human_answers, hq_triggers, hq_asked = phase6_human_query_n(
+        offers, agent_ids, images_map, convergence,
+        use_human_query=use_human_query, verbose=verbose,
+    )
 
     # ── FINALIZE: MERGE ──────────────────────────────────────────────────
-    joint = phase_finalize_n(cur_steps, agent_ids, human_answers={}, verbose=verbose)
+    joint = phase_finalize_n(cur_steps, agent_ids, human_answers=human_answers, verbose=verbose)
 
     print("\n" + "#" * 68)
     print(f"  FINAL JOINT PLAN - {label}")
@@ -107,6 +115,8 @@ def run_n(
         "total_conflicts": len(all_conflicts),
         "conflicts_after": len(convergence.unresolved_conflicts),
         "negotiation_rounds_total": sum(len(r) for r in neg_rounds_by_pair.values()),
+        "hq_triggered": len(hq_triggers),
+        "hq_asked": len(hq_asked),
         "converged": convergence.converged,
     }
     print(f"\n  METRICS")
@@ -143,6 +153,8 @@ def run_n(
             "no_missing_deps": convergence.no_missing_deps,
             "unresolved": len(convergence.unresolved_conflicts),
         },
+        "human_answers": human_answers,
+        "hq_triggers": hq_triggers,
         "joint_plan": joint,
         "metrics": metrics,
     }
