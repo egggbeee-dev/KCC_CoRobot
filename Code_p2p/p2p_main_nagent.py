@@ -19,6 +19,7 @@ from p2p_phase_nagent import (
     phase5_convergence_check_n,
     phase6_human_query_n,
     phase_finalize_n,
+    repair_orphan_pass_n,
 )
 
 
@@ -89,6 +90,9 @@ def run_n(
         plans, offers, images_map, conflicts_by_pair, agent_ids, task,
         use_negotiation=use_negotiation, verbose=verbose,
     )
+
+    # ── 안전장치: negotiation이 receive만 지우고 PASS는 남겨서 orphan이 생긴 경우 복구 ──
+    cur_steps = repair_orphan_pass_n(cur_steps, agent_ids)
 
     # ── PHASE 5: CONVERGENCE CHECK ────────────────────────────────────────
     convergence = phase5_convergence_check_n(cur_steps, offers, agent_ids, all_conflicts)
