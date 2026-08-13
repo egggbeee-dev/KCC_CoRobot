@@ -114,6 +114,8 @@ PLANNING RULES:
 2. Generate 4-6 steps over 0-25 minutes. NO repeated actions.
 3. Prioritize actions that DIRECTLY contribute to the global task.
 4. HANDOFF - if can_provide is NOT empty and a specific other agent needs it:
+   - Only do this if the item is genuinely relevant to something in that agent's
+     need_from_other — don't hand off an item just because you happen to have one spare.
    - Prepare the item first (1-2 prep steps)
    - Then add ONE PASS step: "carry [item] to [room] doorway for [target_agent] pickup"
    - target_agent MUST name the specific agent_id who needs it (one of {other_ids}), not "other".
