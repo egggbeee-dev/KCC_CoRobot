@@ -499,6 +499,28 @@ def _remap_conflict_labels(conflicts: List[ConflictEntry], real_a: str, real_b: 
     return conflicts
 
 
+def _filter_spurious_observability(
+    conflicts: List[ConflictEntry], all_plans: Dict[str, LocalPlan],
+) -> List[ConflictEntry]:
+    """규칙기반으로 자동 생성된 receive step(_ensure_pass_n이 만든, notes에
+    "auto-added"가 들어간 step)은 원래 그 agent의 obs_scope에 없는 물건 이름을
+    그대로 써서 만들어지므로(예: 침실 agent가 "coffee pot" 같은 단어를 씀),
+    원본 detect_conflicts()의 OBSERVABILITY 규칙에 항상 걸린다. 이건 실제 관측
+    위반이 아니라 auto-add 문구 생성 방식 때문에 생기는 가짜 conflict이므로,
+    conflict 목록에 들어가기 전에 걸러낸다."""
+    step_lookup: Dict[int, PlanStep] = {
+        s.step_id: s for plan in all_plans.values() for s in plan.steps
+    }
+
+    def _is_spurious(c: ConflictEntry) -> bool:
+        if "OBSERV" not in str(c.conflict_type):
+            return False
+        flagged = [step_lookup[sid] for sid in c.step_ids if sid in step_lookup]
+        return bool(flagged) and all("auto-added" in (s.notes or "").lower() for s in flagged)
+
+    return [c for c in conflicts if not _is_spurious(c)]
+
+
 def phase3_conflict_detection_n(
     plans: Dict[str, LocalPlan], offers: Dict[str, Offer], agent_ids: List[str], verbose: str = "full",
 ) -> Tuple[List[ConflictEntry], Dict[Tuple[str, str], List[ConflictEntry]]]:
@@ -510,6 +532,7 @@ def phase3_conflict_detection_n(
     for a, b in combinations(agent_ids, 2):
         pair_conflicts = _p2.detect_conflicts(plans[a], plans[b], offers[a], offers[b])
         pair_conflicts = _remap_conflict_labels(pair_conflicts, a, b)
+        pair_conflicts = _filter_spurious_observability(pair_conflicts, plans)
         if pair_conflicts:
             by_pair[(a, b)] = pair_conflicts
             all_conflicts.extend(pair_conflicts)
@@ -722,6 +745,7 @@ def _negotiate_pair(
         remaining = _remap_conflict_labels(
             _p2.detect_conflicts(lp_x, lp_y, offers[agent_x], offers[agent_y]), agent_x, agent_y,
         )
+        remaining = _filter_spurious_observability(remaining, {agent_x: lp_x, agent_y: lp_y})
         if not remaining:
             print(f"    [{agent_x}<->{agent_y}] Round {rnd}: all conflicts resolved.")
             break
@@ -810,6 +834,54 @@ def phase4_negotiation_n(
         all_rounds[(a, b)] = rounds
 
     return cur_steps, all_rounds
+
+
+def repair_orphan_pass_n(
+    cur_steps: Dict[str, List[Dict]], agent_ids: List[str],
+) -> Dict[str, List[Dict]]:
+    """안전장치: negotiation이 conflict를 해소하는 과정에서 receive step만 지우고
+    그 짝인 PASS step은 그대로 남기면, '보낸 사람은 있는데 받는 사람이 없는'
+    orphan PASS가 생길 수 있다. finalize 직전에 한 번 더 검증해서, receive가
+    없는 PASS가 있으면 자동으로 receive step을 다시 붙여준다."""
+    all_steps = [s for aid in agent_ids for s in cur_steps[aid]]
+    all_ids = {s["step_id"] for s in all_steps}
+
+    for sender in agent_ids:
+        for s in list(cur_steps[sender]):
+            if s.get("handoff_type") != "PASS":
+                continue
+            sid = s["step_id"]
+            target = s.get("target_agent")
+            if not target or target not in cur_steps:
+                continue
+            linked = any(sid in t.get("depends_on", []) for t in all_steps)
+            if linked:
+                continue
+
+            item_guess = s.get("action", "").split(" to ")[0].replace("carry ", "").strip() or "item"
+            recv_ids = {t["step_id"] for t in cur_steps[target]} | all_ids
+            recv_sid = max(recv_ids, default=0) + 1
+            while recv_sid in recv_ids:
+                recv_sid += 1
+            recv_step = {
+                "step_id": recv_sid, "time_min": min(30, s.get("time_min", 0) + 1),
+                "room": None, "agent_id": target, "action":
+                    f"receive {item_guess} from {sender} and bring into room",
+                "preconditions": [f"step {sid} completed"], "depends_on": [sid],
+                "handoff_type": None, "target_agent": None, "uncertainty": 0.15,
+                "notes": "auto-added receive step (post-negotiation repair)",
+            }
+            # room을 target 기존 step에서 가져옴 (없으면 target agent_id로 대체)
+            existing_room = next((t.get("room") for t in cur_steps[target]), None)
+            recv_step["room"] = existing_room or target
+            cur_steps[target].append(recv_step)
+            cur_steps[target].sort(key=lambda t: (t.get("time_min", 0), t.get("step_id", 0)))
+            all_steps.append(recv_step)
+            all_ids.add(recv_sid)
+            print(f"  [REPAIR] {target}: receive step{recv_sid} re-added for orphaned "
+                  f"PASS step{sid} from {sender}")
+
+    return cur_steps
 
 
 def _convergence_check_global(
