@@ -32,12 +32,12 @@ from p2p_utils import (
     _norm_handoff, clamp01, compute_plan_uncertainty, compute_token_uncertainty,
     extract_json, jdump, safe_int,
 )
-from p2p_phase import _kw  # stemming 포함된 keyword 추출기 — p2p_phase.py에만 정의됨
+from p2p_phases import _kw  # stemming 포함된 keyword 추출기 — p2p_phases.py에만 정의됨
 from p2p_utils_nagent import make_norm_agent
 from p2p_vlm import run_vlm
 
 # 원본 2-agent 모듈 — 알고리즘을 바꾸지 않고 그대로 재사용하기 위해 통째로 import
-import p2p_phase as _p2
+import p2p_phases as _p2
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -45,34 +45,17 @@ import p2p_phase as _p2
 # ══════════════════════════════════════════════════════════════════════════
 
 def phase1_offer_n(
-    image: str, agent_ids: List[str], task: str,
-    room_labels: Optional[List[str]] = None, verbose: str = "full",
+    images: List[str], agent_ids: List[str], task: str, verbose: str = "full",
 ) -> Dict[str, Offer]:
-    """
-    image       : 단일 이미지 경로. 모든 agent가 이 동일한 이미지를 입력으로 받는다.
-    room_labels : agent별 담당 구역 라벨(예: "kitchen", "Zone 2"). 없으면 "Zone 1".."Zone N"으로
-                  자동 생성된다. 각 agent는 프롬프트 상에서 자기 구역에만 집중하도록 지시받는다
-                  (실제 이미지가 여러 방으로 물리적으로 분리돼있지 않아도, 텍스트로 공간 분리를 흉내낸다).
-    """
-    _banner(f"PHASE 1 — OFFER GENERATION (N={len(agent_ids)}, shared image)")
+    """images: agent 수만큼의 이미지 경로 리스트. 각 agent는 자기 이미지(=자기 구역)만 본다."""
+    _banner(f"PHASE 1 — OFFER GENERATION (N={len(agent_ids)})")
+    if len(images) != len(agent_ids):
+        raise ValueError(f"images 개수({len(images)})가 agent 수({len(agent_ids)})와 일치해야 합니다.")
 
-    if room_labels is None:
-        room_labels = [f"Zone {i + 1}" for i in range(len(agent_ids))]
-    if len(room_labels) != len(agent_ids):
-        raise ValueError("room_labels 개수가 agent_ids 개수와 일치해야 합니다.")
-
-    base_prompt = _p2._build_phase1_prompt(task)  # 원본 프롬프트 그대로 재사용
-
-    def _zoned_prompt(label: str) -> str:
-        return (
-            f"NOTE: This single image shows the entire space. You are responsible ONLY for "
-            f"the '{label}' area within it. Base your Offer (observation, obs_scope, can_do, "
-            f"can_provide, etc.) exclusively on what's visible in that area — ignore anything "
-            f"outside it.\n\n" + base_prompt
-        )
+    prompt = _p2._build_phase1_prompt(task)  # 원본 프롬프트 그대로 재사용
 
     with _TPE(max_workers=len(agent_ids)) as ex:
-        futs = [ex.submit(_p2._vlm_with_retry, image, _zoned_prompt(lbl), False) for lbl in room_labels]
+        futs = [ex.submit(_p2._vlm_with_retry, img, prompt, False) for img in images]
         raws = [f.result()[0] for f in futs]
 
     offers: Dict[str, Offer] = {}
@@ -106,8 +89,6 @@ def _build_local_plan_prompt_n(my: Offer, others: List[Offer], task: str) -> str
     peers = json.dumps([_peer_summary(o) for o in others], ensure_ascii=False, indent=2)
     other_ids = [o.agent_id for o in others]
     return f"""You are the {my.room_type} agent ({my.agent_id}).
-NOTE: This is the same shared image from before. Stay confined to YOUR area
-("{my.room_type}") only — do not plan actions for other areas of the image.
 Global task: "{task}"
 
 There are {len(others) + 1} agents total, each in a separate room, coordinating this task together.
@@ -383,11 +364,11 @@ def _ensure_pass_n(
 
 
 def phase2_local_plan_n(
-    offers: Dict[str, Offer], image: str, agent_ids: List[str],
+    offers: Dict[str, Offer], images: List[str], agent_ids: List[str],
     task: str, verbose: str = "full",
 ) -> Dict[str, LocalPlan]:
-    """image: 단일 이미지 경로 — Phase 1과 동일한 이미지를 모든 agent가 다시 입력받는다."""
-    _banner(f"PHASE 2 - LOCAL PLANNING (N={len(agent_ids)}, shared image)")
+    """images: Phase 1과 동일한 agent별 이미지 리스트."""
+    _banner(f"PHASE 2 - LOCAL PLANNING (N={len(agent_ids)})")
 
     room_to_agent = {
         offers[aid].room_type.lower(): aid for aid in agent_ids if offers[aid].room_type
@@ -400,7 +381,7 @@ def phase2_local_plan_n(
         prompts.append(_build_local_plan_prompt_n(offers[aid], others, task))
 
     with _TPE(max_workers=len(agent_ids)) as ex:
-        futs = [ex.submit(_p2._vlm_with_retry, image, p, True) for p in prompts]
+        futs = [ex.submit(_p2._vlm_with_retry, img, p, True) for img, p in zip(images, prompts)]
         results = [f.result() for f in futs]
 
     plans: Dict[str, LocalPlan] = {}
