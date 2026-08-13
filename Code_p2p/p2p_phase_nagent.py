@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor as _TPE
 from itertools import combinations
 from typing import Dict, List, Optional, Set, Tuple
 
-from p2p_config import MAX_NEGOTIATION_ROUNDS
+from p2p_config import HQ_TOP_K, MAX_NEGOTIATION_ROUNDS
 from p2p_config_nagent import make_agent_ids, step_offset
 from p2p_models import (
     ConflictEntry, ConflictType, ConvergenceResult, Handoff, HQEntry,
@@ -359,6 +359,55 @@ def _ensure_pass_n(
                 print(f"  [ENSURE] {receiver}: receive step{recv_sid} auto-added")
 
             already_targets.add(receiver)
+
+    # ── 추가 검증: VLM이 스스로 만든 PASS도 받는 쪽에 receive step이 있는지 확인 ──
+    # 위 루프는 "이 함수가 새로 주입하는 PASS"에만 receive를 짝지어줬다. 그런데 VLM이
+    # 자기 plan에 이미 PASS를 만들어놓고, 정작 상대방 plan에는 그걸 받는 step이
+    # 없는 경우(= convergence check에서 "PASS matched: FAIL"로 잡히는 원인)가
+    # 생길 수 있다. 이 경우도 동일한 규칙으로 보정한다.
+    for sender in agent_ids:
+        for s in list(plans[sender].steps):
+            if s.handoff_type != "PASS" or not s.target_agent:
+                continue
+            receiver = s.target_agent
+            if receiver not in plans:
+                continue
+            receiver_plan = plans[receiver]
+            already_linked = any(s.step_id in rs.depends_on for rs in receiver_plan.steps)
+            if already_linked:
+                continue
+
+            pkw = _kw(s.action)
+            targets = [
+                rs for rs in receiver_plan.steps
+                if not rs.handoff_type and pkw & _kw(rs.action) and _is_recv_candidate(rs)
+            ]
+            if targets:
+                for rs in targets:
+                    if s.step_id not in rs.depends_on:
+                        rs.depends_on = sorted(rs.depends_on + [s.step_id])
+                    if rs.time_min <= s.time_min:
+                        rs.time_min = s.time_min + 1
+                print(f"  [ENSURE] {receiver} step linked to existing PASS step{s.step_id} from {sender}")
+            else:
+                r_offer = offers[receiver]
+                recv_ids = {rs.step_id for rs in receiver_plan.steps}
+                recv_sid = max(recv_ids, default=0) + 1
+                while recv_sid in recv_ids:
+                    recv_sid += 1
+                item_guess = s.action.split(" to ")[0].replace("carry ", "").strip() or "item"
+                recv_step = PlanStep(
+                    step_id=recv_sid, time_min=min(30, s.time_min + 1),
+                    room=r_offer.room_type, agent_id=receiver,
+                    action=f"receive {item_guess} from {sender} and bring into room",
+                    preconditions=[f"step {s.step_id} completed"], depends_on=[s.step_id],
+                    handoff_type=None, target_agent=None, uncertainty=0.15,
+                    notes="auto-added receive step (existing VLM-authored PASS)",
+                )
+                receiver_plan.steps.append(recv_step)
+                receiver_plan.steps.sort(key=lambda rs: (rs.time_min, rs.step_id))
+                print(f"  [ENSURE] {receiver}: receive step{recv_sid} auto-added "
+                      f"for existing PASS step{s.step_id} from {sender}")
 
     return plans
 
@@ -734,23 +783,16 @@ def phase4_negotiation_n(
     return cur_steps, all_rounds
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# PHASE 5: CONVERGENCE CHECK (N-agent, pairwise aggregation)
-# ══════════════════════════════════════════════════════════════════════════
-#
-# 원본 phase5_convergence_check()는 내부에서 `s.get("agent_id") == "agent_A"`처럼
-# 문자열을 하드코딩 비교하는 지점이 있어, 실제 agent_id가 "agent_C" 등일 때
-# 그대로 재사용하면 오동작한다. 로직은 원본과 100% 동일하게 유지하되, 이 비교만
-# 실제로 전달받은 agent id로 고쳐서 다시 구현한다.
-
-def _convergence_check_pair(
-    a: str, b: str, steps_a: List[Dict], steps_b: List[Dict],
-    offer_a: Offer, offer_b: Offer, conflicts: List[ConflictEntry],
-) -> ConvergenceResult:
-    all_steps = steps_a + steps_b
+def _convergence_check_global(
+    cur_steps, offers, agent_ids, all_conflicts,
+):
+    """PASS 매칭/관측가능성 검사는 본질적으로 전역(全 agent) 속성이라 쌍(pair) 단위로
+    쪼개면 안 된다 — B->D PASS를 (A,B) 쌍만 놓고 보면 D가 그 쌍에 없으니 항상
+    '못 받았다'고 오판된다. 그래서 전체 agent의 step을 한 번에 놓고 검사한다."""
+    all_steps = [s for aid in agent_ids for s in cur_steps[aid]]
     no_cycle = not _p2._has_cycle(all_steps)
 
-    _DERIVED_OBS: Dict[str, Set[str]] = {
+    _DERIVED_OBS = {
         "water": {"water", "drink", "beverage", "glass", "cup", "bottle"},
         "drink": {"drink", "beverage", "cup", "glass", "water", "bottle"},
         "beverage": {"beverage", "drink", "cup", "glass", "water", "bottle"},
@@ -770,18 +812,18 @@ def _convergence_check_pair(
         "cabinet": {"cabinet", "plate", "bowl", "cup", "glass", "tray"},
     }
 
-    def _obs_pool(offer: Offer) -> Set[str]:
+    def _obs_pool(offer):
         scope_kw = set(re.findall(r"\w+", offer.obs_scope.lower()))
-        derived: Set[str] = set()
+        derived = set()
         for w in scope_kw:
             if w in _DERIVED_OBS:
                 derived |= _DERIVED_OBS[w]
-        can_do_kw: Set[str] = set()
+        can_do_kw = set()
         for cd in offer.can_do:
             can_do_kw |= _kw(cd)
         return scope_kw | derived | can_do_kw
 
-    pool_a, pool_b = _obs_pool(offer_a), _obs_pool(offer_b)
+    pools = {aid: _obs_pool(offers[aid]) for aid in agent_ids}
     _SKIP = {"receive", "accept", "notify", "inform", "wait", "pick", "take", "get", "collect", "gather"}
     obs_ok = True
     for s in all_steps:
@@ -792,38 +834,36 @@ def _convergence_check_pair(
         fw = s.get("action", "").lower().split()[0] if s.get("action", "").strip() else ""
         if fw in _SKIP:
             continue
-        pool = pool_a if s.get("agent_id") == a else pool_b  # 실제 agent id로 비교
+        pool = pools.get(s.get("agent_id"), set())
         kw = _kw(s.get("action", ""))
         if kw and pool and not (kw & pool):
             obs_ok = False
             break
 
-    pass_ids_a = {s["step_id"] for s in steps_a if s.get("handoff_type") == "PASS"}
-    pass_ids_b = {s["step_id"] for s in steps_b if s.get("handoff_type") == "PASS"}
-    deps_in_b = {d for s in steps_b for d in s.get("depends_on", []) if d in pass_ids_a}
-    deps_in_a = {d for s in steps_a for d in s.get("depends_on", []) if d in pass_ids_b}
     _RECV = {"receive", "accept", "pick", "collect", "get", "take"}
-    unmatched = (pass_ids_a - deps_in_b) | (pass_ids_b - deps_in_a)
-    truly_unmatched: Set[int] = set()
-    for sid in unmatched:
-        ps = next((s for s in all_steps if s["step_id"] == sid), None)
-        if not ps:
+    truly_unmatched = set()
+    for s in all_steps:
+        if s.get("handoff_type") != "PASS":
             continue
-        target = ps.get("target_agent")
-        target_steps = [s for s in all_steps if s.get("agent_id") == target]
-        if any(s["time_min"] > ps["time_min"] for s in target_steps):
+        sid = s["step_id"]
+        target = s.get("target_agent")
+        target_steps = [t for t in all_steps if t.get("agent_id") == target]
+        linked = any(sid in t.get("depends_on", []) for t in target_steps)
+        if linked:
+            continue
+        if any(t["time_min"] > s["time_min"] for t in target_steps):
             continue
         if any(
-            s.get("action", "").lower().split()[0] in _RECV
-            for s in target_steps if s.get("action", "").strip()
+            t.get("action", "").lower().split()[0] in _RECV
+            for t in target_steps if t.get("action", "").strip()
         ):
             continue
         truly_unmatched.add(sid)
     no_missing = len(truly_unmatched) == 0
 
-    all_ids = {s["step_id"] for s in steps_a + steps_b}
+    all_ids = {s["step_id"] for s in all_steps}
     unresolved = [
-        c for c in conflicts
+        c for c in all_conflicts
         if c.conflict_type in (ConflictType.REDUNDANCY, ConflictType.CANNOT_DO)
         and all(sid in all_ids for sid in c.step_ids)
     ]
@@ -831,37 +871,142 @@ def _convergence_check_pair(
     return ConvergenceResult(converged, no_cycle, obs_ok, no_missing, unresolved)
 
 
+
+
 def phase5_convergence_check_n(
     cur_steps: Dict[str, List[Dict]], offers: Dict[str, Offer], agent_ids: List[str],
+    all_conflicts: Optional[List[ConflictEntry]] = None,
 ) -> ConvergenceResult:
-    _banner("PHASE 5 - CONVERGENCE CHECK (N-agent)")
+    _banner("PHASE 5 — CONVERGENCE CHECK (N-agent, global)")
 
-    all_flat = [s for aid in agent_ids for s in cur_steps[aid]]
-    no_cycle = not _p2._has_cycle(all_flat)
+    conv = _convergence_check_global(cur_steps, offers, agent_ids, all_conflicts or [])
 
-    obs_ok, no_missing = True, True
-    unresolved_all: List[ConflictEntry] = []
-    for a, b in combinations(agent_ids, 2):
-        lp_a = _p2._dicts_to_localplan(cur_steps[a], offers[a])
-        lp_b = _p2._dicts_to_localplan(cur_steps[b], offers[b])
-        pair_conf = _remap_conflict_labels(
-            _p2.detect_conflicts(lp_a, lp_b, offers[a], offers[b]), a, b)
-        conv = _convergence_check_pair(a, b, cur_steps[a], cur_steps[b], offers[a], offers[b], pair_conf)
-        obs_ok = obs_ok and conv.observability_ok
-        no_missing = no_missing and conv.no_missing_deps
-        unresolved_all.extend(conv.unresolved_conflicts)
+    print(f"  No dep cycle : {'OK' if conv.no_dep_cycle else 'FAIL'}")
+    print(f"  Observability: {'OK' if conv.observability_ok else 'FAIL'}")
+    print(f"  PASS matched : {'OK' if conv.no_missing_deps else 'FAIL'}")
+    print(f"  -> Converged : {'YES' if conv.converged else 'NO'}")
+    return conv
 
-    converged = no_cycle and obs_ok and no_missing
-    print(f"  No dep cycle : {'OK' if no_cycle else 'FAIL'}")
-    print(f"  Observability: {'OK' if obs_ok else 'FAIL'} (aggregated over all pairs)")
-    print(f"  PASS matched : {'OK' if no_missing else 'FAIL'} (aggregated over all pairs)")
-    print(f"  -> Converged : {'YES' if converged else 'NO'}")
 
-    return ConvergenceResult(
-        converged=converged, no_dep_cycle=no_cycle,
-        observability_ok=obs_ok, no_missing_deps=no_missing,
-        unresolved_conflicts=unresolved_all,
-    )
+# ══════════════════════════════════════════════════════════════════════════
+# PHASE 6: DEFERRED HUMAN QUERY (N-agent)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Negotiation + Convergence Check까지 거쳤는데도 안 풀린 문제(dep cycle, PASS
+# 짝 안 맞음, observability 위반, 미해결 conflict, 아무도 못 주는 need)가 있으면
+# 사람에게 질문해서 답을 받는다. 원본 phase6_human_query()의 트리거 판정 규칙과
+# 질문 생성 방식을 그대로 재사용하되, agent_A/agent_B 2명 전제를 N명으로 일반화한다.
+
+_HQ_TEMPLATES_N = {
+    "DEP_CYCLE": "There's a circular dependency between agents' plans. How should it be resolved?",
+    "DEPENDENCY": "A handoff step has no matching receive step. Should it be kept or removed?",
+    "OBSERVABILITY": "A step references an object that may not be visible to that agent. Should it be kept?",
+    "UNMATCHED": "No agent can provide a needed item. How should this be handled?",
+}
+
+
+def _generate_hq_question_n(
+    trigger_type: str, detail: str, offers: Dict[str, Offer], agent_ids: List[str], image: str,
+) -> str:
+    template = _HQ_TEMPLATES_N.get(trigger_type, "How should the agents handle this?")
+    agent_desc = "; ".join(f"{aid} is in the {offers[aid].room_type}" for aid in agent_ids)
+    prompt = f"""You are coordinating {len(agent_ids)} home agents.
+{agent_desc}.
+Issue ({trigger_type}): {detail[:200]}
+
+Write ONE clear question for the human operator that:
+- Names which agent and step is involved
+- Asks for a concrete decision
+One sentence only. No preamble."""
+    try:
+        q, _ = run_vlm(image, prompt)
+        q = q.strip().strip('"').strip("'")
+        if 10 < len(q) < 400:
+            return q
+    except Exception as e:
+        print(f"  [HQ VLM error] {e}")
+    return f"{template}\nContext: {detail[:100]}"
+
+
+def phase6_human_query_n(
+    offers: Dict[str, Offer], agent_ids: List[str], images_map: Dict[str, str],
+    convergence: ConvergenceResult, use_human_query: bool = True, verbose: str = "full",
+) -> Tuple[Dict[str, str], List[str], List[str]]:
+    _banner("PHASE 6 — DEFERRED HUMAN QUERY (N-agent)")
+
+    if not use_human_query:
+        print("  [ABLATION] disabled.")
+        return {}, [], []
+
+    if convergence.converged and not convergence.unresolved_conflicts:
+        print("  Plan converged -> no query needed.")
+        return {}, [], []
+
+    raw_triggers: List[Tuple[str, str, float]] = []
+    triggered: List[str] = []
+
+    if not convergence.no_dep_cycle:
+        d = "Dependency cycle detected across agents' plans."
+        triggered.append(f"[DEP_CYCLE] {d}")
+        raw_triggers.append(("DEP_CYCLE", d, 0.90))
+
+    if not convergence.no_missing_deps:
+        d = "A PASS step has no matching receive step on the target agent's side."
+        triggered.append(f"[DEPENDENCY] {d}")
+        raw_triggers.append(("DEPENDENCY", d, 0.85))
+
+    if not convergence.observability_ok:
+        d = "A step references objects outside that agent's visible scope."
+        triggered.append(f"[OBSERVABILITY] {d}")
+        raw_triggers.append(("OBSERVABILITY", d, 0.75))
+
+    for c in convergence.unresolved_conflicts:
+        triggered.append(f"[{c.conflict_type}] {c.description}")
+        raw_triggers.append((str(c.conflict_type), c.description, 0.80))
+
+    _INFO_KW = {
+        "confirmation", "confirm", "ready", "status", "notify",
+        "check", "verified", "done", "complete", "that", "whether",
+    }
+    all_provides = [p for aid in agent_ids for p in offers[aid].can_provide]
+    for aid in agent_ids:
+        for need in offers[aid].need_from_other:
+            if _kw(need) & _INFO_KW:
+                continue
+            if not any(_fuzzy_match_soft(need, p) for p in all_provides):
+                d = f"No agent can provide what {aid} needs: '{need}'"
+                triggered.append(f"[UNMATCHED] {d}")
+                raw_triggers.append(("UNMATCHED", d, 0.75))
+
+    if not triggered:
+        print("  No query needed.")
+        return {}, [], []
+
+    print(f"  Triggers ({len(triggered)}):")
+    for t in triggered:
+        print(f"    {t}")
+
+    raw_triggers.sort(key=lambda x: -x[2])
+    answers: Dict[str, str] = {}
+    asked: List[str] = []
+    rep_image = images_map[agent_ids[0]]  # 대표 이미지 (원본도 img_a 하나만 사용)
+
+    for i, (ttype, detail, pri) in enumerate(raw_triggers[:HQ_TOP_K], 1):
+        print(f"\n  Generating Q{i} [{ttype}]...", end=" ", flush=True)
+        q = _generate_hq_question_n(ttype, detail, offers, agent_ids, rep_image)
+        print("done")
+        print(f"  Q{i}: {q}")
+        asked.append(q)
+
+        try:
+            ans = input("  A: ").strip()
+        except EOFError:
+            ans = ""
+
+        if ans:
+            answers[q] = ans
+
+    return answers, triggered, asked
 
 
 # ══════════════════════════════════════════════════════════════════════════
