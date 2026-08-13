@@ -23,9 +23,9 @@ from p2p_phase_nagent import (
 
 def run_n(
     task_id: Optional[str] = None,
-    image: Optional[str] = None,
-    n_agents: int = 2,
-    room_labels: Optional[List[str]] = None,
+    task: Optional[str] = None,
+    images: Optional[List[str]] = None,
+    n_agents: Optional[int] = None,
     use_offer: bool = True,          # 현재 offer 생성은 항상 수행 (ablation 옵션은 추후 필요시 확장)
     use_negotiation: bool = True,
     label: Optional[str] = None,
@@ -34,27 +34,34 @@ def run_n(
     """
     N-agent P2P 협업 플래닝 파이프라인. N=2, N=4 둘 다 이 함수 하나로 지원한다.
 
-    image       : 단일 이미지 경로. 모든 agent가 이 이미지를 공유해서 입력받고,
-                  프롬프트 상에서 담당 구역(room_labels)만 다르게 지시받는다.
-    n_agents    : agent 수. 2 또는 4 (혹은 그 외 임의의 N)를 그대로 지정하면 된다.
-    room_labels : 길이 n_agents인 구역 이름 리스트. 생략하면 "Zone 1".."Zone N"으로 자동 생성.
-                  예: n_agents=2 -> ["kitchen","living room"], n_agents=4 -> ["kitchen","bedroom","bathroom","living room"]
+    task     : task 설명을 문자열로 직접 전달. 지정하면 tasks.json 조회 없이 바로 이 텍스트를 쓴다.
+               예: run_n(task="Prepare the kitchen and bedroom for a movie night.", images=[...])
+    task_id  : tasks.json에 등록된 task를 쓰고 싶을 때만 사용 (task를 직접 넘기면 무시됨).
+    images   : agent 수만큼의 이미지 경로 리스트. 순서대로 agent_A, agent_B, ... 에 매핑된다.
+               N=2면 이미지 2장, N=4면 이미지 4장을 넣으면 된다.
+    n_agents : 생략하면 len(images)로 자동 결정. 명시하면 images 개수와 일치해야 함.
     """
-    if task_id is None:
-        list_tasks()
-        raise ValueError("task_id를 지정해주세요.")
-    if not image:
-        raise ValueError("image 경로를 지정해주세요. 예: image='room.jpg'")
-    if not Path(image).exists():
-        raise FileNotFoundError(f"image not found: {image}")
-    if n_agents < 2:
-        raise ValueError("n_agents는 2 이상이어야 합니다.")
-    if room_labels is not None and len(room_labels) != n_agents:
-        raise ValueError(f"room_labels 개수({len(room_labels)})가 n_agents({n_agents})와 일치해야 합니다.")
+    if not images:
+        raise ValueError("images 리스트를 지정해주세요. 예: images=['room1.jpg','room2.jpg', ...]")
+
+    if task:
+        # task 텍스트를 직접 받은 경우: tasks.json 조회 없이 바로 사용
+        task_id = task_id or "custom_task"
+    else:
+        if task_id is None:
+            list_tasks()
+            raise ValueError("task 또는 task_id 중 하나는 지정해주세요.")
+        task = get_task(task_id)
+
+    n_agents = n_agents or len(images)
+    if len(images) != n_agents:
+        raise ValueError(f"images 개수({len(images)})가 n_agents({n_agents})와 일치해야 합니다.")
+    for img in images:
+        if not Path(img).exists():
+            raise FileNotFoundError(f"image not found: {img}")
 
     agent_ids = make_agent_ids(n_agents)
-    images_map = {aid: image for aid in agent_ids}  # 전부 같은 이미지 공유
-    task = get_task(task_id)
+    images_map = dict(zip(agent_ids, images))
     label = label or task_id
 
     print("\n" + "#" * 68)
@@ -62,14 +69,14 @@ def run_n(
     print("#" * 68)
     print(f"  Task    : {task[:80]}{'...' if len(task) > 80 else ''}")
     print(f"  Agents  : {agent_ids}")
-    print(f"  Image   : {image} (shared by all {n_agents} agents)")
+    print(f"  Images  : {images}")
     print(f"  Flags   : negotiation={use_negotiation}")
 
-    # ── PHASE 1: OFFER (broadcast, shared image) ─────────────────────────
-    offers = phase1_offer_n(image, agent_ids, task, room_labels=room_labels, verbose=verbose)
+    # ── PHASE 1: OFFER (broadcast, agent별 이미지) ────────────────────────
+    offers = phase1_offer_n(images, agent_ids, task, verbose=verbose)
 
     # ── PHASE 2: LOCAL PLAN (peer-aware) + rule-based PASS sync ──────────
-    plans = phase2_local_plan_n(offers, image, agent_ids, task, verbose=verbose)
+    plans = phase2_local_plan_n(offers, images, agent_ids, task, verbose=verbose)
 
     # ── PHASE 3: DECENTRALIZED CONFLICT DETECTION (all pairs) ───────────
     all_conflicts, conflicts_by_pair = phase3_conflict_detection_n(
