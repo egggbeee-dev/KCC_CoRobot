@@ -234,6 +234,21 @@ def _parse_local_plan_n(
         handoff = _norm_handoff(item.get("handoff_type")) if item.get("handoff_type") else None
         target = norm_agent(item.get("target_agent"))
 
+        # target_agent 필드와 action 텍스트("for {agent} pickup" / "notify {agent}:")가
+        # 서로 다른 agent를 가리키는 경우가 있다 — VLM이 문장은 맞게 쓰고 구조화된
+        # target_agent 필드는 잘못 채우는 경우. 텍스트 쪽이 우리가 지정한 프롬프트
+        # 포맷을 그대로 따르므로 더 신뢰할 수 있어, 불일치 시 텍스트를 우선한다.
+        text_target = None
+        m = re.search(r"for\s+(agent_[A-Za-z]+)\s+pickup", action, re.IGNORECASE)
+        if not m:
+            m = re.search(r"notify\s+(agent_[A-Za-z]+)\s*:", action, re.IGNORECASE)
+        if m:
+            text_target = norm_agent(m.group(1))
+        if text_target and text_target != my.agent_id and text_target != target:
+            print(f"  [WARN] {my.agent_id} step {i}: target_agent field said "
+                  f"'{item.get('target_agent')}' but action text says '{text_target}' -> using text")
+            target = text_target
+
         first_word = action.lower().split()[0] if action.strip() else ""
         if handoff == "INFORM" and first_word in {"carry", "bring", "deliver", "transport"}:
             handoff = "PASS"
@@ -282,6 +297,18 @@ def _ensure_pass_n(
         first = s.action.lower().split()[0] if s.action.strip() else ""
         return first in _LINK_RECV_VERBS
 
+    # 원본 FUZZY_STOPWORDS(p2p_config.py)에는 "of", "from", "into" 같은 전치사가
+    # 빠져있어서, 이 함수의 keyword-overlap 매칭에서 "of" 한 단어만 겹쳐도
+    # 매칭된 걸로 착각하는 문제가 있었다 (예: coffee PASS가 엉뚱하게 sandwich
+    # receive step에 흡수됨). 매칭 전용으로 전치사류를 추가로 걸러낸다.
+    _EXTRA_STOPWORDS_N = {
+        "of", "from", "into", "onto", "by", "as", "for", "this", "that",
+        "these", "those", "then", "than", "also", "your", "their", "its",
+    }
+
+    def _mkw(text: str) -> Set[str]:
+        return _kw(text) - _EXTRA_STOPWORDS_N
+
     for sender in agent_ids:
         s_offer = offers[sender]
         passable = [p for p in s_offer.can_provide if _p2._is_passable(p)]
@@ -296,16 +323,16 @@ def _ensure_pass_n(
 
             matched_item = None
             for item in passable:
-                ikw = _kw(item)
-                if any(ikw & _kw(need) for need in r_offer.need_from_other):
+                ikw = _mkw(item)
+                if any(ikw & _mkw(need) for need in r_offer.need_from_other):
                     matched_item = item
                     break
             if not matched_item:
                 continue
 
             sender_plan, receiver_plan = plans[sender], plans[receiver]
-            pkw = _kw(matched_item)
-            prep = [s for s in sender_plan.steps if pkw & _kw(s.action) and not s.handoff_type]
+            pkw = _mkw(matched_item)
+            prep = [s for s in sender_plan.steps if pkw & _mkw(s.action) and not s.handoff_type]
             if not prep:
                 prep = [s for s in sender_plan.steps if not s.handoff_type]
             if not prep:
@@ -332,7 +359,7 @@ def _ensure_pass_n(
 
             targets = [
                 s for s in receiver_plan.steps
-                if not s.handoff_type and pkw & _kw(s.action) and _is_recv_candidate(s)
+                if not s.handoff_type and pkw & _mkw(s.action) and _is_recv_candidate(s)
             ]
             if targets:
                 for rs in targets:
@@ -377,10 +404,10 @@ def _ensure_pass_n(
             if already_linked:
                 continue
 
-            pkw = _kw(s.action)
+            pkw = _mkw(s.action)
             targets = [
                 rs for rs in receiver_plan.steps
-                if not rs.handoff_type and pkw & _kw(rs.action) and _is_recv_candidate(rs)
+                if not rs.handoff_type and pkw & _mkw(rs.action) and _is_recv_candidate(rs)
             ]
             if targets:
                 for rs in targets:
@@ -1089,20 +1116,29 @@ def format_joint_plan_n(plan: List[Dict], agent_ids: List[str], task: str = "") 
         for s in slot:
             room, action = s.get("room", "?"), s.get("action", "")
             ht, tgt = s.get("handoff_type"), s.get("target_agent", "")
-            if ht == "PASS":
-                marker = f"  --> PASS to {tgt}"
-            elif ht == "INFORM":
-                marker = f"  ~~> NOTIFY {tgt}"
-            else:
-                marker = ""
             deps = s.get("depends_on", [])
             cross = [id_to_step[d] for d in deps
                      if d in id_to_step and id_to_step[d].get("agent_id") != s.get("agent_id")]
+
+            if ht == "PASS":
+                tag = f"[PASS->{tgt}] "
+            elif ht == "INFORM":
+                tag = f"[NOTIFY->{tgt}] "
+            elif cross and any(id_to_step[d].get("handoff_type") == "PASS" for d in deps if d in id_to_step):
+                # PASS를 받는 쪽(별도 handoff_type 없이 depends_on으로만 연결된 receive step)
+                sender = next(
+                    id_to_step[d].get("agent_id") for d in deps
+                    if d in id_to_step and id_to_step[d].get("handoff_type") == "PASS"
+                )
+                tag = f"[RECEIVE<-{sender}] "
+            else:
+                tag = ""
+
             dep_note = ""
             if cross:
                 acts = ", ".join(f'"{x["action"][:35]}"' for x in cross[:2])
                 dep_note = f"\n       (waits for: {acts})"
-            lines.append(f"  [{s.get('agent_id')}|{room}] {action}{marker}{dep_note}")
+            lines.append(f"  [{s.get('agent_id')}|{room}] {tag}{action}{dep_note}")
         lines.append("")
     lines.append(SEP)
     return "\n".join(lines)
